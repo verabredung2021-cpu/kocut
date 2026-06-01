@@ -2,7 +2,8 @@
 
 Whisper의 단어 단위 타임스탬프를 받아 사람이 읽기 좋은 '호흡 단위'로 끊습니다.
 Kiwi 형태소 분석기로 각 어절의 마지막 형태소 품사를 확인해서, 종결어미(EF)나
-연결어미(EC) 뒤에서 자연스럽게 끊고, 조사(J*) 뒤에서는 끊지 않습니다.
+연결어미(EC) 뒤에서 자연스럽게 끊고, 조사(J*)·의존명사(NNB) 뒤에서는 끊지
+않습니다 (예: "보호할 수 / 있을까요" 같은 어색한 분할 방지).
 
 이 모듈은 LLM을 쓰지 않습니다. 순수 규칙 기반이라 비용이 0이고 결정적입니다.
 """
@@ -27,10 +28,12 @@ def _get_kiwi() -> Kiwi:
 
 @dataclass(frozen=True)
 class SplitOptions:
-    max_words: int = 8
-    max_duration: float = 2.5
-    min_duration: float = 0.6
-    max_chars: int = 40
+    # 강의·인터뷰에 맞춰 넉넉히 묶되, 과하게 길어지지 않도록 균형
+    # (실제 50분 인터뷰 SRT로 튜닝한 값)
+    max_words: int = 12
+    max_duration: float = 4.0
+    min_duration: float = 0.8
+    max_chars: int = 38
 
 
 # 끊기 적합/부적합 형태소 태그
@@ -38,23 +41,30 @@ _FINAL_ENDING = "EF"  # 종결어미 (-다, -요, -까, -습니다)
 _CONN_ENDING = "EC"  # 연결어미 (-고, -서, -면, -지만)
 _PUNCT_TAGS = {"SF", "SP", "SS", "SE", "SO"}  # 구두점
 _PARTICLE_PREFIX = "J"  # 조사 (JKS, JKO, JX, JKB, ...)
+_DEPENDENT_NOUN = "NNB"  # 의존명사 (수, 것, 거, 줄, 데, 바, 때문 ...)
 
 
-def _break_score(word_text: str, next_gap: float) -> float:
-    """이 단어 뒤에서 자막을 끊는 게 얼마나 적합한지 점수화합니다."""
+def _last_tag(word_text: str) -> str:
+    """어절의 마지막 형태소 품사 태그를 반환합니다."""
     kiwi = _get_kiwi()
     tokens = kiwi.tokenize(word_text)
     if not tokens:
-        return 0.0
-    last = tokens[-1]
+        return ""
+    return str(tokens[-1].tag)
+
+
+def _score_from_tag(last_tag: str, next_gap: float) -> float:
+    """마지막 품사와 다음 단어 간격으로 '끊기 적합도'를 점수화합니다."""
     score = 0.0
-    if last.tag == _FINAL_ENDING:
+    if last_tag == _FINAL_ENDING:
         score += 10.0
-    elif last.tag in _PUNCT_TAGS:
+    elif last_tag in _PUNCT_TAGS:
         score += 8.0
-    elif last.tag == _CONN_ENDING:
+    elif last_tag == _CONN_ENDING:
         score += 5.0
-    elif last.tag.startswith(_PARTICLE_PREFIX):
+    elif last_tag == _DEPENDENT_NOUN:
+        score -= 8.0  # 의존명사 뒤는 끊으면 안 됨
+    elif last_tag.startswith(_PARTICLE_PREFIX):
         score -= 5.0
     # 다음 단어와의 간격이 크면 자연스러운 쉼 → 끊기 좋은 자리
     if next_gap > 0.5:
@@ -91,7 +101,14 @@ def split_subtitles(words: list[Word], options: SplitOptions | None = None) -> l
         char_count = sum(len(w.word.strip()) for w in current)
         next_gap = (words[i + 1].start - word.end) if i + 1 < len(words) else 999.0
 
-        score = _break_score(word.word, next_gap)
+        last_tag = _last_tag(word.word)
+        score = _score_from_tag(last_tag, next_gap)
+        avoid_break = last_tag == _DEPENDENT_NOUN or last_tag.startswith(_PARTICLE_PREFIX)
+        # 다음 어절이 의존명사로 시작하면 ("수", "것" 등) 현재 단어와 묶여야 함
+        if not avoid_break and i + 1 < len(words):
+            next_tokens = _get_kiwi().tokenize(words[i + 1].word)
+            if next_tokens and next_tokens[0].tag == _DEPENDENT_NOUN:
+                avoid_break = True
 
         # 강제 분할: 너무 길어지면 무조건 끊음
         force = (
@@ -99,6 +116,17 @@ def split_subtitles(words: list[Word], options: SplitOptions | None = None) -> l
             or duration >= options.max_duration
             or char_count >= options.max_chars
         )
+        # 단, 의존명사/조사로 끝나면 어색하니 안전 한계 내에서 다음 어절까지 미룸
+        if (
+            force
+            and avoid_break
+            and i + 1 < len(words)
+            and len(current) < options.max_words + 4
+            and char_count < options.max_chars + 15
+            and duration < options.max_duration + 2.0
+        ):
+            force = False
+
         # 자연 분할: 종결어미/구두점 + 최소 길이 충족
         natural = score >= 8.0 and duration >= options.min_duration
 

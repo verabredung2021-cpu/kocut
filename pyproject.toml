@@ -1,6 +1,6 @@
 [project]
 name = "kocut"
-version = "0.2.4"
+version = "0.2.6"
 description = "한국어 영상 자동 편집 보조 도구 (자막 + 컷 후보 추출)"
 readme = "README.md"
 requires-python = ">=3.10"

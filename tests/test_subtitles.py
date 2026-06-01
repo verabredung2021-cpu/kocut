@@ -67,3 +67,21 @@ def test_indices_are_sequential() -> None:
     subs = split_subtitles(words)
     indices = [s.index for s in subs]
     assert indices == list(range(1, len(subs) + 1))
+
+
+def test_dependent_noun_not_isolated() -> None:
+    # 의존명사 "수"가 앞 단어와 분리되어 자막 맨 앞에 오면 안 됨
+    words = [_w("보호할", 0.0, 1.0), _w("수", 1.0, 1.3), _w("있을까요", 1.3, 2.0)]
+    subs = split_subtitles(words)
+    for sub in subs:
+        assert not sub.text.startswith("수 ")
+        assert sub.text.strip() != "수"
+
+
+def test_dependent_noun_kept_under_force_split() -> None:
+    # 강제 분할이 일어나는 긴 발화에서도 의존명사는 앞 단어와 묶임
+    words = [_w(f"내용{i}", i * 0.6, i * 0.6 + 0.6) for i in range(12)]
+    words += [_w("이용할", 7.2, 7.8), _w("수", 7.8, 8.1), _w("있어요", 8.1, 8.9)]
+    subs = split_subtitles(words)
+    for sub in subs:
+        assert not sub.text.startswith("수 ")
