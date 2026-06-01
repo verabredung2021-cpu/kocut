@@ -1,0 +1,46 @@
+[project]
+name = "kocut"
+version = "0.2.4"
+description = "한국어 영상 자동 편집 보조 도구 (자막 + 컷 후보 추출)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "kiwipiepy>=0.17.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "rapidfuzz>=3.0.0",
+    "pydantic>=2.0.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "mypy>=1.8.0",
+]
+gui = [
+    "gradio>=5.0.0",
+]
+
+[project.scripts]
+kocut = "kocut.cli:app"
+kocut-gui = "kocut.gui:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kocut"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
