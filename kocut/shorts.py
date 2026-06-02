@@ -74,6 +74,8 @@ def score_shorts_candidates(
         return []
 
     # 파라미터 가드 — step_s<=0이면 무한루프, window_s<=0이면 의미 없는 결과
+    if target_count <= 0:
+        return []
     if not math.isfinite(step_s) or step_s <= 0:
         step_s = 15.0
     if not math.isfinite(window_s) or window_s <= 0:

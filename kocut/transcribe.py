@@ -24,6 +24,7 @@ class WhisperNotInstalledError(RuntimeError):
 
 
 _nvidia_dll_registered = False
+_nvidia_dll_handles: list[object] = []
 
 
 def _register_nvidia_dll_dirs() -> None:
@@ -58,7 +59,8 @@ def _register_nvidia_dll_dirs() -> None:
                 if bin_dir.is_dir() and key not in seen:
                     seen.add(key)
                     try:
-                        os.add_dll_directory(key)
+                        # 반환된 핸들을 보관해야 Windows DLL 검색 경로가 유지됩니다.
+                        _nvidia_dll_handles.append(os.add_dll_directory(key))
                     except OSError:
                         pass
     except Exception:  # noqa: BLE001  (DLL 경로 등록 실패는 치명적이지 않음)
@@ -115,7 +117,10 @@ def _resolve_auto_device(device: str, compute_type: str) -> tuple[str, str]:
 
 
 # GPU 관련 실패로 판단할 에러 메시지 힌트 (cuBLAS/cuDNN DLL 누락 등)
-_CUDA_ERROR_HINTS = ("cublas", "cudnn", "cuda", "gpu", ".dll", "libcu", "no kernel")
+_CUDA_ERROR_HINTS = (
+    "cublas", "cudnn", "cuda", "gpu", ".dll", "libcu", "no kernel",
+    "out of memory", "failed to allocate", "allocator",
+)
 
 
 def _looks_like_cuda_error(exc: Exception) -> bool:

@@ -16,10 +16,23 @@ from pathlib import Path
 from kocut.types import CutCandidate, Meta, SubtitleSegment
 
 
-def _seconds_to_srt(seconds: float) -> str:
+def _normalise_fps(fps: float) -> int:
+    """EDL timecode 계산에 사용할 안전한 정수 FPS를 반환합니다."""
+    if not math.isfinite(fps) or fps <= 0:
+        return 30
+    fps_i = int(round(fps))
+    return fps_i if fps_i > 0 else 30
+
+
+def _safe_duration(seconds: float) -> float:
+    """NaN/inf/음수를 0초로 보정합니다."""
     if not math.isfinite(seconds):
-        seconds = 0.0
-    seconds = max(0.0, seconds)
+        return 0.0
+    return max(0.0, seconds)
+
+
+def _seconds_to_srt(seconds: float) -> str:
+    seconds = _safe_duration(seconds)
     ms = int(round((seconds - int(seconds)) * 1000))
     if ms == 1000:  # 반올림이 올림으로 넘어간 경우 보정
         seconds += 1
@@ -32,14 +45,11 @@ def _seconds_to_srt(seconds: float) -> str:
 
 
 def _seconds_to_tc(seconds: float, fps: float = 30.0) -> str:
-    if not math.isfinite(seconds):
-        seconds = 0.0
-    seconds = max(0.0, seconds)
-    if not math.isfinite(fps) or fps <= 0:
-        fps = 30.0
-    total_frames = int(round(seconds * fps))
-    frames = total_frames % int(round(fps))
-    total_seconds = total_frames // int(round(fps))
+    seconds = _safe_duration(seconds)
+    fps_i = _normalise_fps(fps)
+    total_frames = int(round(seconds * fps_i))
+    frames = total_frames % fps_i
+    total_seconds = total_frames // fps_i
     s = total_seconds % 60
     m = (total_seconds // 60) % 60
     h = total_seconds // 3600
@@ -48,6 +58,7 @@ def _seconds_to_tc(seconds: float, fps: float = 30.0) -> str:
 
 def write_srt(subtitles: list[SubtitleSegment], out_path: Path) -> Path:
     """자막을 SubRip(.srt) 형식으로 저장합니다."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     blocks: list[str] = []
     for sub in subtitles:
         blocks.append(str(sub.index))
@@ -60,6 +71,7 @@ def write_srt(subtitles: list[SubtitleSegment], out_path: Path) -> Path:
 
 def _invert_cuts(cuts: list[CutCandidate], total_duration: float) -> list[tuple[float, float]]:
     """컷(삭제) 구간을 제외한 '남길 구간' 리스트를 만듭니다."""
+    total_duration = _safe_duration(total_duration)
     if total_duration <= 0:
         return []
     # 겹치는 컷을 병합
@@ -88,6 +100,7 @@ def _invert_cuts(cuts: list[CutCandidate], total_duration: float) -> list[tuple[
 
 def write_edl(cuts: list[CutCandidate], out_path: Path, total_duration: float, fps: float = 30.0) -> Path:
     """컷 후보를 반영한 CMX3600 EDL을 저장합니다 (남길 구간만 이어붙임)."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     keep_ranges = _invert_cuts(cuts, total_duration)
     lines = ["TITLE: KoCut Edit", "FCM: NON-DROP FRAME", ""]
     record_cursor = 0.0
@@ -111,6 +124,7 @@ def write_meta_json(meta: Meta, out_path: Path) -> Path:
     표준 JSON 파서가 결과를 읽을 수 있도록 보장합니다. (모델 계층에서 이미
     시간 값을 보정하므로 정상 흐름에서는 NaN이 없습니다.)
     """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(meta.model_dump(), ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",

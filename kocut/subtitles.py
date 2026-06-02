@@ -11,19 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kiwipiepy import Kiwi
-
+from kocut.korean import get_analyzer
 from kocut.types import SubtitleSegment, Word
-
-_kiwi: Kiwi | None = None
-
-
-def _get_kiwi() -> Kiwi:
-    """Kiwi 인스턴스를 lazy 생성 (import 시점에 로딩하지 않음)."""
-    global _kiwi
-    if _kiwi is None:
-        _kiwi = Kiwi()
-    return _kiwi
 
 
 @dataclass(frozen=True)
@@ -46,8 +35,8 @@ _DEPENDENT_NOUN = "NNB"  # 의존명사 (수, 것, 거, 줄, 데, 바, 때문 ..
 
 def _last_tag(word_text: str) -> str:
     """어절의 마지막 형태소 품사 태그를 반환합니다."""
-    kiwi = _get_kiwi()
-    tokens = kiwi.tokenize(word_text)
+    analyzer = get_analyzer()
+    tokens = analyzer.tokenize(word_text)
     if not tokens:
         return ""
     return str(tokens[-1].tag)
@@ -106,7 +95,7 @@ def split_subtitles(words: list[Word], options: SplitOptions | None = None) -> l
         avoid_break = last_tag == _DEPENDENT_NOUN or last_tag.startswith(_PARTICLE_PREFIX)
         # 다음 어절이 의존명사로 시작하면 ("수", "것" 등) 현재 단어와 묶여야 함
         if not avoid_break and i + 1 < len(words):
-            next_tokens = _get_kiwi().tokenize(words[i + 1].word)
+            next_tokens = get_analyzer().tokenize(words[i + 1].word)
             if next_tokens and next_tokens[0].tag == _DEPENDENT_NOUN:
                 avoid_break = True
 

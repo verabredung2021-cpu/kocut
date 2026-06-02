@@ -6,18 +6,8 @@
 """
 from __future__ import annotations
 
-from kiwipiepy import Kiwi
-
+from kocut.korean import get_analyzer
 from kocut.types import CutCandidate, CutKind, Word
-
-_kiwi: Kiwi | None = None
-
-
-def _get_kiwi() -> Kiwi:
-    global _kiwi
-    if _kiwi is None:
-        _kiwi = Kiwi()
-    return _kiwi
 
 
 # 명시적 간투사 어휘 (Kiwi 태그만으로는 놓치는 것들 보강)
@@ -35,7 +25,7 @@ def detect_fillers(words: list[Word], padding: float = 0.08) -> list[CutCandidat
     """단어 리스트에서 간투사 컷 후보를 검출합니다."""
     if padding < 0:
         padding = 0.0
-    kiwi = _get_kiwi()
+    analyzer = get_analyzer()
     cuts: list[CutCandidate] = []
 
     for word in words:
@@ -50,7 +40,7 @@ def detect_fillers(words: list[Word], padding: float = 0.08) -> list[CutCandidat
         duration = word.end - word.start
         is_filler = False
 
-        tokens = kiwi.tokenize(clean)
+        tokens = analyzer.tokenize(clean)
         # 단일 형태소이고 감탄사/접속부사 태그
         if len(tokens) == 1 and tokens[0].tag in _FILLER_TAGS:
             is_filler = True
