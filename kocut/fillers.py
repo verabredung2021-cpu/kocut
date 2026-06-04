@@ -15,6 +15,9 @@ _FILLER_WORDS = {
     "어", "음", "아", "그", "그러니까", "뭐", "막", "약간",
     "저기", "이제", "에", "흠", "어어", "음음", "그그", "뭐랄까",
 }
+# 거의 항상 군더더기인 핵심 간투사 (높은 confidence). 그 외는 문맥상 의미가
+# 있을 수 있어 낮은 confidence로 두고, --filler-mode에서 자동 컷 여부를 정합니다.
+_CORE_FILLERS = {"어", "음", "아", "에", "흠", "어어", "음음", "그그"}
 # 간투사로 판정할 형태소 태그 (감탄사, 접속부사)
 _FILLER_TAGS = {"IC", "MAJ"}
 # 간투사 최대 길이 — 이보다 길면 실제 의미 발화일 가능성
@@ -53,6 +56,7 @@ def detect_fillers(words: list[Word], padding: float = 0.08) -> list[CutCandidat
             is_filler = False
 
         if is_filler:
+            confidence = 0.9 if clean in _CORE_FILLERS else 0.6
             cuts.append(
                 CutCandidate(
                     start=max(0.0, word.start - padding),
@@ -60,7 +64,7 @@ def detect_fillers(words: list[Word], padding: float = 0.08) -> list[CutCandidat
                     kind=CutKind.FILLER,
                     reason=f"간투사 '{clean}'",
                     text=clean,
-                    confidence=0.9,
+                    confidence=confidence,
                 )
             )
 

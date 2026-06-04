@@ -106,6 +106,7 @@ class Meta(BaseModel):
     segments: list[Segment] = Field(default_factory=list)
     subtitles: list[SubtitleSegment] = Field(default_factory=list)
     cuts: list[CutCandidate] = Field(default_factory=list)
+    filler_candidates: list[CutCandidate] = Field(default_factory=list)
     shorts: list[ShortsCandidate] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

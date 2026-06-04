@@ -16,7 +16,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from kocut.logger import get_logger
 from kocut.types import Segment, Word
+
+_logger = get_logger("kocut.transcribe")
 
 
 class WhisperNotInstalledError(RuntimeError):
@@ -161,42 +164,57 @@ def iter_segments(
     오류가 나면 자동으로 CPU로 재시도합니다.
     """
     dev, ct = _resolve_auto_device(device, compute_type)
+    _logger.info(
+        "트랜스크립션 시작: 요청 device=%s → 실제 device=%s, compute_type=%s, model=%s",
+        device, dev, ct, model_name,
+    )
     if dev == "cuda":
         _register_nvidia_dll_dirs()  # pip 설치된 cuBLAS/cuDNN DLL 경로 등록
     try:
         raw_segments = _run_transcription(wav_path, model_name, dev, ct, language)
+        if dev == "cuda":
+            _logger.info("✅ GPU(cuda)로 추론 완료 — 세그먼트 %d개", len(raw_segments))
+        else:
+            _logger.info("CPU로 추론 완료 — 세그먼트 %d개", len(raw_segments))
     except WhisperNotInstalledError:
         raise
     except Exception as exc:  # noqa: BLE001
         if dev == "cuda" and _looks_like_cuda_error(exc):
             # GPU 연산 실패 → CPU로 자동 전환 (cuBLAS/cuDNN 미설치 등)
+            _logger.warning(
+                "⚠️ GPU(cuda) 추론 실패 → CPU로 전환합니다. 원인: %s: %s",
+                type(exc).__name__, exc,
+            )
             raw_segments = _run_transcription(wav_path, model_name, "cpu", "int8", language)
+            _logger.info("CPU 전환 후 추론 완료 — 세그먼트 %d개", len(raw_segments))
         else:
             raise
 
     prev_end = 0.0
     for seg in raw_segments:
-        seg_start = _safe_time(seg.start, prev_end)
-        seg_end = _safe_time(seg.end, seg_start + 0.05)
+        seg_start = _safe_time(getattr(seg, "start", None), prev_end)
+        seg_end = _safe_time(getattr(seg, "end", None), seg_start + 0.05)
         if seg_end < seg_start:
             seg_end = seg_start + 0.05
 
         words: list[Word] = []
         word_cursor = seg_start
-        for w in (seg.words or []):
-            w_start = _safe_time(w.start, word_cursor)
-            w_end = _safe_time(w.end, w_start + 0.05)
+        for w in (getattr(seg, "words", None) or []):
+            w_start = _safe_time(getattr(w, "start", None), word_cursor)
+            w_end = _safe_time(getattr(w, "end", None), w_start + 0.05)
             if w_end < w_start:
                 w_end = w_start + 0.05
-            prob = _safe_time(w.probability, 0.0) if w.probability is not None else None
-            words.append(Word(word=w.word, start=w_start, end=w_end, prob=prob))
+            raw_prob = getattr(w, "probability", None)
+            prob = _safe_time(raw_prob, 0.0) if raw_prob is not None else None
+            raw_word = getattr(w, "word", "")
+            words.append(Word(word=str(raw_word), start=w_start, end=w_end, prob=prob))
             word_cursor = w_end
 
         prev_end = seg_end
         yield Segment(
             start=seg_start,
             end=seg_end,
-            text=seg.text.strip(),
+            text=str(getattr(seg, "text", "")).strip(),
             words=words,
         )
 

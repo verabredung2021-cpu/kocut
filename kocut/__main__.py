@@ -1,4 +1,4 @@
-from kocut.cli import app
+from kocut.cli import main
 
 if __name__ == "__main__":
-    app()
+    main()

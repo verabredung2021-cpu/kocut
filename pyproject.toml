@@ -1,9 +1,9 @@
 [project]
 name = "kocut"
-version = "0.2.7"
+version = "0.4.0"
 description = "한국어 영상 자동 편집 보조 도구 (자막 + 컷 후보 추출)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "faster-whisper>=1.0.0",
     "kiwipiepy>=0.17.0",
@@ -26,7 +26,7 @@ gui = [
 ]
 
 [project.scripts]
-kocut = "kocut.cli:app"
+kocut = "kocut.cli:main"
 kocut-gui = "kocut.gui:main"
 
 [build-system]

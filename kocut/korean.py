@@ -71,7 +71,7 @@ def get_analyzer() -> Any:
     if _analyzer is not None:
         return _analyzer
     try:
-        from kiwipiepy import Kiwi  # type: ignore[import-not-found]  # noqa: PLC0415
+        from kiwipiepy import Kiwi  # noqa: PLC0415
     except ImportError:
         _analyzer = SimpleKoreanAnalyzer()
         _using_fallback = True
