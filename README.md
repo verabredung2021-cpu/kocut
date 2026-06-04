@@ -23,6 +23,10 @@
 | 쇼츠 후보 | 한국어 훅·감정 키워드 점수로 9:16 구간 추천 |
 
 
+## v0.4.1 패치 내용
+
+- **Windows GPU(cuda) DLL 로딩 수정.** `nvidia-cublas-cu12` / `nvidia-cudnn-cu12`를 설치해도 ctranslate2가 `cublas64_12.dll`을 못 찾던 문제. 원인은 (1) venv에서 nvidia 패키지 경로 탐색이 불완전, (2) `os.add_dll_directory`만으로는 cuDNN→cuBLAS 전이 의존성이 안 잡힘. 이제 `nvidia` 네임스페이스 패키지 위치를 importlib로 정확히 찾고, DLL 디렉토리를 `add_dll_directory` + `PATH` 양쪽에 등록합니다. DLL을 못 찾으면 `-v` 로그에 안내를 남깁니다.
+
 ## v0.4.0 패치 내용
 
 내부 구조를 정리하고(파이프라인 통합) 0.3에서 남겨둔 한계를 닫았습니다.
@@ -241,39 +245,3 @@ kocut/
 
 - faster-whisper (MIT), Kiwi (LGPL), librosa (ISC), rapidfuzz (MIT)
 - Whisper 모델: OpenAI (MIT). 한국어 fine-tune 모델 사용 시 `-m ghost613/whisper-large-v3-turbo-korean`
-
----
-
-## OSS project status
-
-KoCut is an early-stage but working local video editing assistant for Korean creators.
-
-- Public release: v0.4.x
-- Core workflow: video/audio input → Korean transcription → cut suggestions → SRT/EDL/FCPXML/JSON/Markdown export
-- Main users: Korean YouTubers, editors, clinics, agencies, interview channels, and small production teams
-- Project direction: local-first video analysis with optional AI-assisted maintainer and editing workflows
-- Maintenance focus: tests, docs, export compatibility, Korean editing rules, and security review
-
-## Project documents
-
-- [Roadmap](ROADMAP.md)
-- [Changelog](CHANGELOG.md)
-- [Contributing Guide](CONTRIBUTING.md)
-- [Security Policy](SECURITY.md)
-- [Support Guide](SUPPORT.md)
-- [Maintainers](MAINTAINERS.md)
-- [Development Notes](docs/development/development-notes.md)
-- [Release Checklist](docs/development/release-checklist.md)
-- [Security Review Notes](docs/development/security-review.md)
-- [Example exports](docs/examples)
-
-## Example outputs
-
-KoCut can generate editor-reviewable files such as:
-
-- `sample.srt` subtitles
-- `sample.cuts.edl` edit decision list
-- `sample.meta.json` structured metadata
-- `sample.cuts.md` human-readable review report
-
-See [`docs/examples`](docs/examples) for small media-free examples.

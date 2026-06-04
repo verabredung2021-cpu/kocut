@@ -138,3 +138,18 @@ def test_pipeline_analyze_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyP
     # keep_wav=False → 임시 WAV 정리됨
     assert result.wav_path is None
     assert not (out_dir / "C0430.kocut.wav").exists()
+
+
+# ---- v0.4.1: CUDA DLL 경로 탐색 ----
+
+def test_find_nvidia_bin_dirs_returns_str_list() -> None:
+    from kocut.transcribe import _find_nvidia_bin_dirs
+    result = _find_nvidia_bin_dirs()
+    assert isinstance(result, list)
+    assert all(isinstance(p, str) for p in result)
+
+
+def test_register_nvidia_dll_dirs_no_crash() -> None:
+    import kocut.transcribe as t
+    t._nvidia_dll_registered = False
+    t._register_nvidia_dll_dirs()  # 플랫폼 무관 예외 없이 통과해야 함

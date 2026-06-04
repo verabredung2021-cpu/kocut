@@ -30,42 +30,81 @@ _nvidia_dll_registered = False
 _nvidia_dll_handles: list[object] = []
 
 
+def _find_nvidia_bin_dirs() -> list[str]:
+    """설치된 nvidia-* pip 패키지의 bin 디렉토리를 모두 찾습니다 (venv 안전).
+
+    venv에서 site.getsitepackages()가 항상 venv 경로를 주는 건 아니므로, 실제
+    'nvidia' 네임스페이스 패키지 위치(importlib)를 1순위로 쓰고 sys.prefix·site를
+    보조로 씁니다.
+    """
+    roots: list[Path] = []
+    # 1) 실제 'nvidia' 네임스페이스 패키지 위치 (가장 신뢰도 높음)
+    try:
+        import importlib.util  # noqa: PLC0415
+
+        spec = importlib.util.find_spec("nvidia")
+        if spec is not None and spec.submodule_search_locations is not None:
+            roots.extend(Path(p) for p in spec.submodule_search_locations)
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) sys.prefix 기반 site-packages/nvidia (venv 포함)
+    roots.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia")
+    # 3) site 모듈 기반 보조 경로
+    try:
+        import site  # noqa: PLC0415
+
+        for base in site.getsitepackages():
+            roots.append(Path(base) / "nvidia")
+        user_site = site.getusersitepackages()
+        if isinstance(user_site, str):
+            roots.append(Path(user_site) / "nvidia")
+    except Exception:  # noqa: BLE001
+        pass
+
+    bin_dirs: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for sub in sorted(root.iterdir()):
+            bin_dir = sub / "bin"
+            key = str(bin_dir)
+            if bin_dir.is_dir() and key not in seen:
+                seen.add(key)
+                bin_dirs.append(key)
+    return bin_dirs
+
+
 def _register_nvidia_dll_dirs() -> None:
     """Windows에서 nvidia-* pip 패키지(cuBLAS/cuDNN)의 DLL 경로를 검색 경로에 등록합니다.
 
     nvidia-cublas-cu12 / nvidia-cudnn-cu12를 pip로 설치하면 DLL이
     site-packages/nvidia/<lib>/bin 에 들어가는데, ctranslate2가 이 위치를
-    자동으로 찾지 못해 'cublas64_12.dll is not found' 오류가 납니다. 해당
-    디렉토리를 os.add_dll_directory로 등록해 GPU 사용을 가능하게 합니다.
-    (Windows 전용, 한 번만 수행)
+    자동으로 찾지 못해 'cublas64_12.dll is not found' 오류가 납니다. 해당 디렉토리를
+    os.add_dll_directory로 등록하고, 추가로 PATH 앞에도 넣습니다 — ctranslate2의
+    cuDNN→cuBLAS 전이 의존성은 add_dll_directory만으로는 못 찾는 경우가 있어서
+    PATH 등록이 함께 필요합니다. (Windows 전용, 한 번만 수행)
     """
     global _nvidia_dll_registered
     if _nvidia_dll_registered or sys.platform != "win32":
         return
     _nvidia_dll_registered = True
     try:
-        import site  # noqa: PLC0415
-
-        bases: list[str] = list(site.getsitepackages())
-        user_site = site.getusersitepackages()
-        if isinstance(user_site, str):
-            bases.append(user_site)
-
-        seen: set[str] = set()
-        for base in bases:
-            nvidia_dir = Path(base) / "nvidia"
-            if not nvidia_dir.is_dir():
-                continue
-            for sub in nvidia_dir.iterdir():
-                bin_dir = sub / "bin"
-                key = str(bin_dir)
-                if bin_dir.is_dir() and key not in seen:
-                    seen.add(key)
-                    try:
-                        # 반환된 핸들을 보관해야 Windows DLL 검색 경로가 유지됩니다.
-                        _nvidia_dll_handles.append(os.add_dll_directory(key))
-                    except OSError:
-                        pass
+        bin_dirs = _find_nvidia_bin_dirs()
+        for bin_dir in bin_dirs:
+            try:
+                # 반환된 핸들을 보관해야 Windows DLL 검색 경로가 유지됩니다.
+                _nvidia_dll_handles.append(os.add_dll_directory(bin_dir))
+            except OSError:
+                pass
+        if bin_dirs:
+            os.environ["PATH"] = os.pathsep.join(bin_dirs) + os.pathsep + os.environ.get("PATH", "")
+            _logger.info("nvidia CUDA DLL 경로 %d개 등록 (GPU용)", len(bin_dirs))
+        else:
+            _logger.warning(
+                "nvidia CUDA DLL 디렉토리를 찾지 못했습니다. "
+                "`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` 설치 여부를 확인하세요."
+            )
     except Exception:  # noqa: BLE001  (DLL 경로 등록 실패는 치명적이지 않음)
         pass
 

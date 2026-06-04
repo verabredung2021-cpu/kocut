@@ -1,4 +1,18 @@
-﻿# Changelog
+﻿
+## v0.4.1 - GPU DLL loading fix
+
+### Fixed
+- Improved Windows GPU DLL discovery for CTranslate2 / faster-whisper.
+- Automatically registers NVIDIA CUDA package DLL directories from the active virtual environment.
+- Adds both os.add_dll_directory() and PATH registration for cuBLAS/cuDNN runtime DLLs.
+- Reduces false CPU fallback when cublas64_12.dll exists inside .venv\Lib\site-packages\nvidia\...\bin.
+
+### Notes
+- This release focuses on CUDA runtime loading reliability on Windows.
+- If GPU still fails with a DLL "cannot be loaded" error, check NVIDIA driver CUDA compatibility with 
+vidia-smi.
+
+# Changelog
 
 All notable changes to KoCut will be documented in this file.
 
@@ -36,3 +50,4 @@ All notable changes to KoCut will be documented in this file.
 - Silence, filler-word, retake, and Shorts candidate logic
 - SRT, EDL, JSON, and Markdown-style exports
 - Rule-based tests
+
