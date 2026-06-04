@@ -1,0 +1,14 @@
+﻿TITLE: KoCut Sample Cut List
+FCM: NON-DROP FRAME
+
+001  AX       V     C        00:00:00:00 00:00:02:00 00:00:00:00 00:00:02:00
+* FROM CLIP NAME: sample.mp4
+* COMMENT: Keep opening explanation
+
+002  AX       V     C        00:00:02:00 00:00:05:00 00:00:02:00 00:00:05:00
+* FROM CLIP NAME: sample.mp4
+* COMMENT: Review filler-word candidate
+
+003  AX       V     C        00:00:05:00 00:00:08:00 00:00:05:00 00:00:08:00
+* FROM CLIP NAME: sample.mp4
+* COMMENT: Keep export explanation

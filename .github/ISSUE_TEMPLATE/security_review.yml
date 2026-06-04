@@ -1,0 +1,22 @@
+﻿name: Security review task
+description: Track security review items for local file handling and media processing
+title: "[Security] "
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include private exploit details in public issues. Use GitHub private security advisories for sensitive reports.
+  - type: textarea
+    id: area
+    attributes:
+      label: Review area
+      description: What should be reviewed?
+      placeholder: Path handling, subprocess calls, dependency risk, temporary files, GUI input validation, export safety...
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Add non-sensitive details.

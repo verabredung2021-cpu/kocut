@@ -4,7 +4,7 @@ KoCut is a local video editing assistant that processes user-selected media file
 
 ## Supported versions
 
-Security reviews and fixes will focus on the latest public release.
+Security reviews and fixes focus on the latest public release.
 
 | Version | Supported |
 | --- | --- |
@@ -24,7 +24,7 @@ Because KoCut handles arbitrary local file paths, filenames, media files, and ex
 
 ## Reporting a vulnerability
 
-Please open a private security advisory on GitHub if available, or contact the maintainer through the GitHub profile.
+Please use GitHub private security advisories if available. If that is not available, contact the maintainer through the GitHub profile.
 
 Please include:
 
@@ -33,7 +33,5 @@ Please include:
 - Affected version or commit
 - Example input if safe to share
 - Expected and actual behavior
-
-## Disclosure
 
 Please do not publicly disclose a vulnerability until there has been a reasonable opportunity to investigate and release a fix.

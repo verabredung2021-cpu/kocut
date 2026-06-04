@@ -241,3 +241,39 @@ kocut/
 
 - faster-whisper (MIT), Kiwi (LGPL), librosa (ISC), rapidfuzz (MIT)
 - Whisper 모델: OpenAI (MIT). 한국어 fine-tune 모델 사용 시 `-m ghost613/whisper-large-v3-turbo-korean`
+
+---
+
+## OSS project status
+
+KoCut is an early-stage but working local video editing assistant for Korean creators.
+
+- Public release: v0.4.x
+- Core workflow: video/audio input → Korean transcription → cut suggestions → SRT/EDL/FCPXML/JSON/Markdown export
+- Main users: Korean YouTubers, editors, clinics, agencies, interview channels, and small production teams
+- Project direction: local-first video analysis with optional AI-assisted maintainer and editing workflows
+- Maintenance focus: tests, docs, export compatibility, Korean editing rules, and security review
+
+## Project documents
+
+- [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Support Guide](SUPPORT.md)
+- [Maintainers](MAINTAINERS.md)
+- [Development Notes](docs/development/development-notes.md)
+- [Release Checklist](docs/development/release-checklist.md)
+- [Security Review Notes](docs/development/security-review.md)
+- [Example exports](docs/examples)
+
+## Example outputs
+
+KoCut can generate editor-reviewable files such as:
+
+- `sample.srt` subtitles
+- `sample.cuts.edl` edit decision list
+- `sample.meta.json` structured metadata
+- `sample.cuts.md` human-readable review report
+
+See [`docs/examples`](docs/examples) for small media-free examples.
