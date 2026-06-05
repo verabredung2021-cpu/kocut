@@ -58,6 +58,37 @@ class SubtitleSegment(_TimedModel):
     text: str
 
 
+class Utterance(_TimedModel):
+    """문장/호흡 단위 발화. v0.8 paper edit와 문장 단위 컷 플래너에서 사용합니다."""
+
+    index: int
+    start: float
+    end: float
+    text: str
+    word_count: int = 0
+    confidence: float = 1.0
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
+class TopicSection(_TimedModel):
+    """긴 영상 훑기용 토픽/챕터 후보."""
+
+    index: int
+    start: float
+    end: float
+    title: str
+    keywords: list[str] = Field(default_factory=list)
+    text: str = ""
+    score: float = 0.0
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
 class CutKind:
     """컷 후보 종류 (문자열 상수)."""
 
@@ -105,8 +136,11 @@ class Meta(BaseModel):
     model: str = ""
     segments: list[Segment] = Field(default_factory=list)
     subtitles: list[SubtitleSegment] = Field(default_factory=list)
+    utterances: list[Utterance] = Field(default_factory=list)
+    topic_sections: list[TopicSection] = Field(default_factory=list)
     cuts: list[CutCandidate] = Field(default_factory=list)
     filler_candidates: list[CutCandidate] = Field(default_factory=list)
+    review_candidates: list[CutCandidate] = Field(default_factory=list)
     shorts: list[ShortsCandidate] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

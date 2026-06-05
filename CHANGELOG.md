@@ -1,67 +1,20 @@
-﻿
-## v0.4.1 - GPU DLL loading fix
-
-### Fixed
-- Improved Windows GPU DLL discovery for CTranslate2 / faster-whisper.
-- Automatically registers NVIDIA CUDA package DLL directories from the active virtual environment.
-- Adds both os.add_dll_directory() and PATH registration for cuBLAS/cuDNN runtime DLLs.
-- Reduces false CPU fallback when cublas64_12.dll exists inside .venv\Lib\site-packages\nvidia\...\bin.
-
-### Notes
-- This release focuses on CUDA runtime loading reliability on Windows.
-- If GPU still fails with a DLL "cannot be loaded" error, check NVIDIA driver CUDA compatibility with 
-vidia-smi.
-
 # Changelog
 
-
-
-## v0.5.1
-
-- Continued KoCut public development.
-- Updated project version to v0.5.1.
-- Improved release workflow and repository maintenance.
-## v0.4.2
-
-- Continued KoCut public development.
-- Updated project version to v0.4.2.
-- Refined OSS maintenance, documentation, and release workflow.
-All notable changes to KoCut will be documented in this file.
-
-## Unreleased
+## v0.8.0 - Director paper-edit workflow
 
 ### Added
-
-- GitHub Actions CI workflow
-- Issue templates for bugs, features, docs, and security review
-- Pull request template
-- Dependabot configuration
-- Roadmap, contributing guide, security policy, support guide, and maintainer notes
-- Media-free example export files
+- Sentence/utterance-level director planner.
+- `*.paper_edit.csv` export.
+- `*.director_review.html` browser review page.
+- `*.review_decisions.csv` for manual review decisions.
+- `kocut apply-decisions` command to create a new EDL from reviewed CSV decisions.
+- Meta JSON fields: `utterances`, `topic_sections`, `review_candidates`.
+- GUI downloads for paper edit, review decisions, and HTML review.
 
 ### Changed
+- `process` defaults to v0.8 sentence-level director mode. Use `--word-gap-mode` to compare with the v0.7 planner.
 
-- Improved open-source project structure for public collaboration and review
-
-## v0.4.0
-
-### Added
-
-- Continued public development of Korean video auto-cut workflow
-- Export workflow documentation for editor-reviewable outputs
-- Project documentation updates for OSS review
-
-## v0.2.x
-
-### Added
-
-- Initial public development series
-- CLI workflow
-- Gradio GUI
-- Korean subtitle generation workflow
-- Silence, filler-word, retake, and Shorts candidate logic
-- SRT, EDL, JSON, and Markdown-style exports
-- Rule-based tests
-
-
-
+### Verified
+- `pytest`: 112 passed.
+- `compileall`: passed.
+- CLI help for `process` and `apply-decisions`: passed.

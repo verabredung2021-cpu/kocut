@@ -1,34 +1,32 @@
 """KoCut 분석 파이프라인 (CLI·GUI 공용).
 
-이전에는 cli.py와 gui.py가 각자 파이프라인을 복제하고 있어서, 한쪽에만 개선이
-들어가면(예: 단어 경계 정제) 다른 쪽은 옛 동작으로 남는 문제가 있었습니다. 이
-모듈의 `analyze()`를 양쪽에서 호출해 결과가 항상 같도록 통일합니다.
-
-진행 상황은 `on_progress(fraction, description)` 콜백으로 보고합니다. CLI는 이를
-rich 진행 표시줄에, GUI는 gradio 진행바에 연결합니다.
+CLI와 GUI가 동일한 `analyze()`를 호출합니다. v0.7부터는 무음 후보를 전부
+반영하지 않고, 단어 gap + 컷 예산 + 프리셋별 audition EDL을 생성하는 구조로
+변경했습니다.
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from kocut import (
     audio,
+    director,
     fcpxml,
     fillers,
     output,
+    quality,
     refine,
     retakes,
     review,
     shorts,
     silence,
-    quality,
     subtitles,
     transcribe,
 )
-from kocut.types import CutCandidate, Meta, Segment, Word
+from kocut.types import CutCandidate, Meta, Segment, Utterance, Word
 
 ProgressFn = Callable[[float, str], None]
 
@@ -48,9 +46,14 @@ class PipelineResult:
     edl_path: Path
     json_path: Path
     review_path: Path
+    paper_edit_path: Path
+    review_candidates_path: Path
+    html_review_path: Path
     fcpxml_path: Path | None
     wav_path: Path | None
     used_word_fallback: bool
+    variant_edl_paths: dict[str, Path] = field(default_factory=dict)
+    variants_report_path: Path | None = None
 
 
 def words_from_segments(segments: list[Segment]) -> tuple[list[Word], bool]:
@@ -86,6 +89,133 @@ def _split_fillers(
     return keep, candidates
 
 
+def _plan_cuts(
+    *,
+    words: list[Word],
+    segments: list[Segment],
+    utterances: list[Utterance] | None,
+    wav_path: Path,
+    duration: float,
+    preset_name: str,
+    skip_silence: bool,
+    filler_cuts: list[CutCandidate],
+    retake_cuts: list[CutCandidate],
+    pad_before_ms: int | None = None,
+    pad_after_ms: int | None = None,
+    min_cut_ms: int | None = None,
+    min_silence_ms: int | None = None,
+    min_keep_between_cuts_ms: int | None = None,
+    filler_mode: str | None = None,
+    director_mode: bool = True,
+) -> tuple[list[CutCandidate], list[CutCandidate], int]:
+    """프리셋 하나에 대해 최종 컷과 검토 후보를 계산합니다."""
+    preset = quality.get_preset(preset_name)
+    effective_min_silence_ms = preset.min_silence_ms if min_silence_ms is None else min_silence_ms
+    effective_min_cut_ms = preset.min_cut_ms if min_cut_ms is None else min_cut_ms
+    effective_pad_before_ms = preset.pad_before_ms if pad_before_ms is None else pad_before_ms
+    effective_pad_after_ms = preset.pad_after_ms if pad_after_ms is None else pad_after_ms
+    effective_min_keep_ms = (
+        preset.min_keep_between_cuts_ms
+        if min_keep_between_cuts_ms is None
+        else min_keep_between_cuts_ms
+    )
+    effective_filler_mode = preset.filler_mode if filler_mode is None else filler_mode
+
+    silence_cuts: list[CutCandidate] = []
+    if not skip_silence:
+        if director_mode and utterances and preset.name != "_legacy":
+            # v0.8 핵심: 단어 사이 gap이 아니라 문장/호흡 단위 사이 gap만 자릅니다.
+            silence_cuts = director.sentence_boundary_silence_cuts(
+                utterances,
+                duration,
+                preset=preset,
+                min_silence_ms=max(0, effective_min_silence_ms),
+                pad_before_ms=max(0, effective_pad_before_ms),
+                pad_after_ms=max(0, effective_pad_after_ms),
+                min_cut_ms=max(0, effective_min_cut_ms),
+            )
+        elif words and preset.name != "_legacy":
+            # v0.7 방식: word gap + 발화 리듬 + 컷 예산.
+            silence_cuts = quality.contextual_silence_cuts(
+                words,
+                duration,
+                preset=preset,
+                min_silence_ms=max(0, effective_min_silence_ms),
+                pad_before_ms=max(0, effective_pad_before_ms),
+                pad_after_ms=max(0, effective_pad_after_ms),
+                min_cut_ms=max(0, effective_min_cut_ms),
+            )
+        else:
+            silence_cuts = silence.detect_silences(
+                str(wav_path),
+                words,
+                min_ms=max(0, effective_min_silence_ms),
+                padding_ms=max(effective_pad_before_ms, effective_pad_after_ms, 0),
+                min_cut_ms=max(0, effective_min_cut_ms),
+            )
+
+    raw_cuts = [*filler_cuts, *silence_cuts, *retake_cuts]
+    to_cut, filler_candidates = _split_fillers(raw_cuts, effective_filler_mode)
+    cuts = refine.refine_cuts(
+        to_cut,
+        words,
+        pad_before=max(0, effective_pad_before_ms) / 1000.0,
+        pad_after=max(0, effective_pad_after_ms) / 1000.0,
+        min_cut=0.0,
+    )
+    cuts = quality.smooth_cuts(
+        cuts,
+        duration,
+        min_cut_seconds=max(0, effective_min_cut_ms) / 1000.0,
+        min_keep_between_cuts_seconds=max(0, effective_min_keep_ms) / 1000.0,
+        max_cuts_per_minute=preset.max_cuts_per_minute,
+        max_remove_ratio=preset.max_remove_ratio,
+    )
+    cuts.sort(key=lambda c: c.start)
+    filler_candidates.sort(key=lambda c: c.start)
+    return cuts, filler_candidates, len(raw_cuts)
+
+
+def _write_variants_report(
+    path: Path,
+    *,
+    duration: float,
+    main_preset: str,
+    variant_paths: dict[str, Path],
+    variant_cuts: dict[str, list[CutCandidate]],
+) -> Path:
+    lines = [
+        "# KoCut cut variants",
+        "",
+        "한 번의 Whisper 분석으로 만든 프리셋별 EDL입니다. Premiere/DaVinci에 각각 넣어보고 가장 자연스러운 것을 고르세요.",
+        "",
+        f"- 메인 프리셋: `{main_preset}`",
+        f"- 원본 길이: {duration:.1f}초",
+        "",
+        "| 프리셋 | 컷 수 | 삭제 합계 | 예상 결과 길이 | 파일 |",
+        "|---|---:|---:|---:|---|",
+    ]
+    for name in quality.preset_pack_names():
+        if name not in variant_cuts:
+            continue
+        cuts = variant_cuts[name]
+        removed = sum(c.duration for c in cuts)
+        file_name = variant_paths.get(name, Path("-"))
+        lines.append(
+            f"| `{name}` | {len(cuts)} | {removed:.1f}s | {max(0.0, duration - removed):.1f}s | `{file_name.name}` |"
+        )
+    lines += [
+        "",
+        "## 추천",
+        "",
+        "- 상담/강의/롱폼은 `safe` 또는 `balanced`부터 확인하세요.",
+        "- 컷백처럼 빠른 템포가 필요하면 `cutback`을 보세요.",
+        "- `aggressive`는 쇼츠/짧은 영상용입니다. 원장님 상담 영상에는 기본으로 권장하지 않습니다.",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def analyze(
     video: Path,
     out_dir: Path,
@@ -100,15 +230,16 @@ def analyze(
     skip_shorts: bool = False,
     skip_fcpxml: bool = False,
     keep_wav: bool = False,
+    cut_preset: str = "safe",
     pad_before_ms: int | None = None,
     pad_after_ms: int | None = None,
-    min_cut_ms: int = 100,
+    min_cut_ms: int | None = None,
     min_clip_ms: int | None = None,
     min_silence_ms: int | None = None,
-    filler_mode: str | None = None,
-    quality_profile: str = "longform",
-    min_silence_cut_ms: int | None = None,
     min_keep_between_cuts_ms: int | None = None,
+    filler_mode: str | None = None,
+    write_variants: bool = True,
+    director_mode: bool = True,
     on_progress: ProgressFn | None = None,
     logger: logging.Logger | None = None,
 ) -> PipelineResult:
@@ -118,20 +249,7 @@ def analyze(
     타임코드도 ffprobe로 읽어 FCPXML 해상도와 EDL relink 보정에 씁니다.
     """
     log = logger or logging.getLogger("kocut.pipeline")
-    profile = quality.get_profile(quality_profile)
-    resolved_min_silence_ms = profile.min_silence_ms if min_silence_ms is None else max(0, min_silence_ms)
-    resolved_pad_before_ms = profile.pad_before_ms if pad_before_ms is None else max(0, pad_before_ms)
-    resolved_pad_after_ms = profile.pad_after_ms if pad_after_ms is None else max(0, pad_after_ms)
-    resolved_min_clip_ms = profile.min_clip_ms if min_clip_ms is None else max(0, min_clip_ms)
-    resolved_filler_mode = profile.filler_mode if filler_mode is None else filler_mode
-    resolved_min_silence_cut_ms = (
-        profile.min_silence_cut_ms if min_silence_cut_ms is None else max(0, min_silence_cut_ms)
-    )
-    resolved_min_keep_between_cuts_ms = (
-        profile.min_keep_between_cuts_ms
-        if min_keep_between_cuts_ms is None
-        else max(0, min_keep_between_cuts_ms)
-    )
+    preset = quality.get_preset(cut_preset)
 
     def progress(fraction: float, desc: str) -> None:
         if on_progress is not None:
@@ -181,38 +299,61 @@ def analyze(
         progress(0.7, "자막 분할 중...")
         subs = subtitles.split_subtitles(words)
 
-        # 4. 컷 후보 검출 → 간투사 모드 분리 → 단어 경계 정제
+        # 3-b. 문장/호흡 단위 paper edit
+        progress(0.73, "문장 단위 분석 중...")
+        utterances = director.build_utterances(words)
+        topic_sections = director.build_topic_sections(utterances)
+        review_candidates = director.detect_review_candidates(utterances, words)
+
+        # 4. 컷 후보 검출 → 프리셋별 플래너 → 단어 경계 정제
         progress(0.78, "컷 후보 검출 중...")
-        raw_cuts: list[CutCandidate] = []
-        if not skip_fillers:
-            raw_cuts += fillers.detect_fillers(words)
-        if not skip_silence:
-            raw_cuts += silence.detect_silences(
-                str(wav_path), words, min_ms=resolved_min_silence_ms, padding_ms=0
-            )
-        if not skip_retakes:
-            raw_cuts += retakes.detect_retakes(segments)
-        to_cut, filler_candidates = _split_fillers(raw_cuts, resolved_filler_mode)
-        cuts = refine.refine_cuts(
-            to_cut,
-            words,
-            pad_before=resolved_pad_before_ms / 1000.0,
-            pad_after=resolved_pad_after_ms / 1000.0,
-            min_cut=max(0, min_cut_ms) / 1000.0,
+        filler_raw = [] if skip_fillers else fillers.detect_fillers(words)
+        retake_raw = [] if skip_retakes else retakes.detect_retakes(segments)
+        cuts, filler_candidates, raw_count = _plan_cuts(
+            words=words,
+            segments=segments,
+            utterances=utterances,
+            wav_path=wav_path,
+            duration=duration,
+            preset_name=preset.name,
+            skip_silence=skip_silence,
+            filler_cuts=filler_raw,
+            retake_cuts=retake_raw,
+            pad_before_ms=pad_before_ms,
+            pad_after_ms=pad_after_ms,
+            min_cut_ms=min_cut_ms,
+            min_silence_ms=min_silence_ms,
+            min_keep_between_cuts_ms=min_keep_between_cuts_ms,
+            filler_mode=filler_mode,
+            director_mode=director_mode,
         )
-        before_quality = len(cuts)
-        cuts = quality.smooth_cuts(
-            cuts,
-            total_duration=duration,
-            min_silence_cut_ms=resolved_min_silence_cut_ms,
-            min_keep_between_cuts_ms=resolved_min_keep_between_cuts_ms,
-        )
-        cuts.sort(key=lambda c: c.start)
-        filler_candidates.sort(key=lambda c: c.start)
         log.info(
-            "컷 후보 %d개 → 모드[%s]·정제 %d개 → 품질[%s] %d개 (검토 후보 %d개)",
-            len(raw_cuts), resolved_filler_mode, before_quality, quality_profile, len(cuts), len(filler_candidates),
+            "컷 후보 %d개 → 프리셋[%s]·정제 후 %d개 (검토 후보 %d개)",
+            raw_count, preset.name, len(cuts), len(filler_candidates),
         )
+
+        # 4-b. 프리셋별 audition EDL 생성용 컷 계산 (Whisper 재실행 없음)
+        variant_cuts: dict[str, list[CutCandidate]] = {}
+        variant_candidates: dict[str, list[CutCandidate]] = {}
+        if write_variants:
+            for name in quality.preset_pack_names():
+                vcuts, vcands, _raw = _plan_cuts(
+                    words=words,
+                    segments=segments,
+                    utterances=utterances,
+                    wav_path=wav_path,
+                    duration=duration,
+                    preset_name=name,
+                    skip_silence=skip_silence,
+                    filler_cuts=filler_raw,
+                    retake_cuts=retake_raw,
+                    filler_mode=None,
+                    director_mode=director_mode,
+                )
+                variant_cuts[name] = vcuts
+                variant_candidates[name] = vcands
+        else:
+            variant_cuts[preset.name] = cuts
 
         # 5. 쇼츠 후보
         progress(0.88, "쇼츠 후보 점수 중...")
@@ -226,12 +367,15 @@ def analyze(
             model=model,
             segments=segments,
             subtitles=subs,
+            utterances=utterances,
+            topic_sections=topic_sections,
             cuts=cuts,
             filler_candidates=filler_candidates,
+            review_candidates=review_candidates,
             shorts=shorts_list,
             warnings=warnings,
         )
-        min_clip_seconds = resolved_min_clip_ms / 1000.0
+        min_clip_seconds = max(0, min_clip_ms or 0) / 1000.0
         srt_path = output.write_srt(subs, out_dir / f"{video.stem}.srt")
         edl_path = output.write_edl(
             cuts,
@@ -254,9 +398,43 @@ def analyze(
                 height=media.height,
                 min_clip_seconds=min_clip_seconds,
             )
+        variant_edl_paths: dict[str, Path] = {}
+        if write_variants:
+            for name, vcuts in variant_cuts.items():
+                path = output.write_edl(
+                    vcuts,
+                    out_dir / f"{video.stem}.cuts.{name}.edl",
+                    duration,
+                    effective_fps,
+                    source_name=video.name,
+                    min_clip_seconds=min_clip_seconds,
+                    source_start_tc=media.start_tc,
+                )
+                variant_edl_paths[name] = path
+        variants_report_path = None
+        if variant_edl_paths:
+            variants_report_path = review.write_variants_review(
+                video.name,
+                out_dir / f"{video.stem}.cut_variants.md",
+                duration=duration,
+                variants=variant_cuts,
+            )
         json_path = output.write_meta_json(meta, out_dir / f"{video.stem}.meta.json")
         review_path = review.write_review(
             meta, out_dir / f"{video.stem}.cuts.md", fps=effective_fps
+        )
+        paper_edit_path = director.write_paper_edit_csv(utterances, out_dir / f"{video.stem}.paper_edit.csv")
+        review_candidates_path = director.write_review_decisions_csv(
+            [*filler_candidates, *review_candidates], out_dir / f"{video.stem}.review_decisions.csv"
+        )
+        html_review_path = director.write_director_html(
+            source_name=video.name,
+            out_path=out_dir / f"{video.stem}.director_review.html",
+            duration=duration,
+            utterances=utterances,
+            cuts=cuts,
+            review_candidates=[*filler_candidates, *review_candidates],
+            topics=topic_sections,
         )
         progress(1.0, "완료")
     finally:
@@ -276,7 +454,12 @@ def analyze(
         edl_path=edl_path,
         json_path=json_path,
         review_path=review_path,
+        paper_edit_path=paper_edit_path,
+        review_candidates_path=review_candidates_path,
+        html_review_path=html_review_path,
         fcpxml_path=fcpxml_path,
         wav_path=kept_wav,
         used_word_fallback=used_word_fallback,
+        variant_edl_paths=variant_edl_paths,
+        variants_report_path=variants_report_path,
     )

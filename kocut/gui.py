@@ -33,6 +33,9 @@ GuiResult = tuple[
     str,
     str,
     str,
+    str,
+    str,
+    str,
 ]
 
 
@@ -64,8 +67,9 @@ def process_video(
     do_retakes: bool,
     do_shorts: bool,
     fps: float | None,
-    quality_profile: str,
-    filler_mode: str | None,
+    cut_preset: str,
+    filler_mode: str,
+    director_mode: bool,
     progress: gr.Progress = gr.Progress(),  # noqa: B008
 ) -> GuiResult:
     """영상을 분석해 (요약, 자막표, 컷표, 검토후보표, 쇼츠표, srt, edl, fcpxml, 리포트, json)을 반환합니다."""
@@ -87,8 +91,9 @@ def process_video(
             skip_silence=not do_silence,
             skip_retakes=not do_retakes,
             skip_shorts=not do_shorts,
+            cut_preset=cut_preset,
             filler_mode=filler_mode,
-            quality_profile=quality_profile,
+            director_mode=director_mode,
             on_progress=lambda f, d: progress(f, desc=d),
         )
     except FFmpegError as exc:
@@ -118,10 +123,12 @@ def process_video(
     summary = (
         f"### ✅ 분석 완료\n"
         f"- 영상 길이: **{meta.duration:.1f}초** ({meta.duration / 60:.1f}분) · {result.fps:g}fps\n"
+        f"- 품질 프리셋: **{cut_preset}**\n"
         f"- 제거 예정: **{removed:.1f}초** → 결과 **{final:.1f}초**\n"
         f"- 자막: **{len(meta.subtitles)}줄**\n"
         f"- 컷 후보: **{len(cuts)}개** (간투사 {n_fill} · 무음 {n_sil} · 재촬영 {n_ret})\n"
         f"{cand_note}"
+        f"- 문장 단위: **{len(meta.utterances)}개** · 리뷰 후보: **{len(meta.review_candidates)}개**\n"
         f"- 쇼츠 후보: **{len(meta.shorts)}개**\n"
         f"{fallback_warning}"
         f"\n아래 탭에서 결과를 확인하고, EDL/FCPXML을 내려받아 Premiere·DaVinci에 import 하세요. "
@@ -135,9 +142,10 @@ def process_video(
         [_fmt_time(c.start), _fmt_time(c.end), f"{c.duration:.2f}s", _KIND_KR.get(c.kind, c.kind), c.text.strip() or c.reason]
         for c in cuts
     ]
+    review_all = [*meta.filler_candidates, *meta.review_candidates]
     cand_rows: list[list[object]] = [
-        [_fmt_time(c.start), _fmt_time(c.end), f"{c.duration:.2f}s", c.text.strip() or c.reason]
-        for c in meta.filler_candidates
+        [_fmt_time(c.start), _fmt_time(c.end), f"{c.duration:.2f}s", _KIND_KR.get(c.kind, c.kind), c.reason, c.text.strip() or c.reason]
+        for c in review_all
     ]
     short_rows: list[list[object]] = [
         [_fmt_time(c.start), _fmt_time(c.end), round(c.score, 1), c.reason, c.text]
@@ -155,6 +163,9 @@ def process_video(
         str(result.fcpxml_path) if result.fcpxml_path else "",
         str(result.review_path),
         str(result.json_path),
+        str(result.paper_edit_path),
+        str(result.review_candidates_path),
+        str(result.html_review_path),
     )
 
 
@@ -195,10 +206,10 @@ def build_ui() -> gr.Blocks:
                     value=None, label="프레임레이트 (EDL/FCPXML)",
                     info="미지정 시 원본에서 자동 감지",
                 )
-                quality_profile = gr.Dropdown(
-                    [("롱폼/강의 (자연스럽게, 기본)", "longform"), ("균형", "balanced"), ("쇼츠/빠른 호흡", "tight"), ("원시/디버그", "raw")],
-                    value="longform", label="컷 품질 프리셋",
-                    info="컷백처럼 자연스럽게 보려면 롱폼 또는 균형을 먼저 쓰세요",
+                cut_preset = gr.Dropdown(
+                    [("안전 rough cut", "safe"), ("균형", "balanced"), ("컷백식 빠른 템포", "cutback"), ("공격적", "aggressive")],
+                    value="safe", label="컷 품질 프리셋",
+                    info="품질이 우선이면 safe부터 보세요",
                 )
                 filler_mode = gr.Dropdown(
                     [("보수적 (핵심 간투사만)", "conservative"), ("균형", "balanced"), ("적극적 (애매한 것까지)", "aggressive")],
@@ -209,8 +220,9 @@ def build_ui() -> gr.Blocks:
         with gr.Row():
             do_fillers = gr.Checkbox(value=True, label="간투사 검출 (어/음/그)")
             do_silence = gr.Checkbox(value=True, label="무음 검출")
-            do_retakes = gr.Checkbox(value=True, label="재촬영 검출")
+            do_retakes = gr.Checkbox(value=False, label="재촬영 검출 (기본 꺼짐)")
             do_shorts = gr.Checkbox(value=True, label="쇼츠 후보")
+            director_mode = gr.Checkbox(value=True, label="v0.8 문장 단위 컷 엔진")
 
         analyze_btn = gr.Button("🚀 분석 시작", variant="primary", size="lg")
         summary = gr.Markdown()
@@ -232,8 +244,8 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("🔎 검토 후보 (애매 간투사)"):
                 gr.Markdown("문맥상 의미가 있을 수 있어 **자동 컷에서 제외**한 간투사입니다. 직접 확인 후 필요하면 적용하세요. (간투사 강도를 '적극적'으로 바꾸면 자동 컷에 포함됩니다.)")
                 cand_df = gr.Dataframe(
-                    headers=["시작", "끝", "길이", "단어"],
-                    datatype=["str", "str", "str", "str"],
+                    headers=["시작", "끝", "길이", "종류", "이유", "텍스트"],
+                    datatype=["str", "str", "str", "str", "str", "str"],
                     wrap=True,
                 )
             with gr.Tab("🎞️ 쇼츠 후보"):
@@ -250,6 +262,9 @@ def build_ui() -> gr.Blocks:
             fcpxml_out = gr.File(label="컷 (FCPXML, beta)")
             review_out = gr.File(label="컷 미리보기 (MD)")
             json_out = gr.File(label="메타데이터 (JSON)")
+            paper_out = gr.File(label="Paper edit (CSV)")
+            decisions_out = gr.File(label="리뷰 결정표 (CSV)")
+            html_out = gr.File(label="Director 리뷰 (HTML)")
 
         # 파일 업로드 시 경로 칸에 자동 반영
         uploaded.change(lambda f: f or "", inputs=uploaded, outputs=path_text)
@@ -258,19 +273,19 @@ def build_ui() -> gr.Blocks:
             process_video,
             inputs=[
                 path_text, uploaded, model, device, compute_type,
-                do_fillers, do_silence, do_retakes, do_shorts, fps, quality_profile, filler_mode,
+                do_fillers, do_silence, do_retakes, do_shorts, fps, cut_preset, filler_mode, director_mode,
             ],
             outputs=[
                 summary, sub_df, cut_df, cand_df, short_df,
-                srt_out, edl_out, fcpxml_out, review_out, json_out,
+                srt_out, edl_out, fcpxml_out, review_out, json_out, paper_out, decisions_out, html_out,
             ],
         )
 
         gr.Markdown(
             "---\n"
             "💡 **사용 팁**: 첫 실행 시 Whisper 모델(~3GB)이 자동 다운로드됩니다. "
-            "GPU가 있으면 훨씬 빠릅니다. 컷이 너무 많으면 컷 품질 프리셋을 '롱폼/강의'로, "
-            "덜 잘리면 '균형' 또는 '쇼츠'로 바꾸세요."
+            "GPU가 있으면 훨씬 빠릅니다. 자막이 과하게 끊기거나 간투사가 과검출되면 "
+            "간투사 강도를 '보수적'으로 낮추거나 옵션을 끄세요."
         )
 
     return cast(gr.Blocks, demo)

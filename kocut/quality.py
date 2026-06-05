@@ -1,203 +1,390 @@
-"""컷 품질/호흡 보정.
+"""컷 품질 안정화 프리셋과 후처리.
 
-KoCut 0.5.0까지의 가장 큰 문제는 RMS 기준 무음 후보를 거의 그대로 EDL에
-반영해 말 사이의 0.2~0.5초 호흡까지 잘라 버리는 것이었습니다. 이 모듈은
-Cutback류 도구의 핵심 차이를 흉내 냅니다: **볼륨이 낮은 구간**이 아니라
-**편집자가 실제로 잘랐을 법한 죽은 공백**만 자동 컷으로 남깁니다.
-
-구현 원칙은 보수적입니다.
-- 짧은 무음 컷은 삭제하지 않고 되살립니다.
-- 두 컷 사이에 1초 안팎의 짧은 말 조각이 끼면 양옆 무음 컷을 되살려
-  마이크로 점프컷을 방지합니다.
-- 간투사/재촬영 컷은 원래 의미 기반 컷이므로 무음 품질 필터보다 우선합니다.
+KoCut 0.7의 목표는 '더 많이 자르기'가 아니라 '편집자가 납득할 rough cut'입니다.
+무음 볼륨 threshold만으로 자르면 짧은 호흡까지 200개 이상 잘리는 문제가 생기므로,
+word timestamp가 있으면 단어 사이 gap을 우선 사용하고 컷 예산을 둡니다.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import statistics
 
-from kocut.types import CutCandidate, CutKind
+from kocut.types import CutCandidate, CutKind, Word
 
 
 @dataclass(frozen=True)
-class QualityProfile:
-    """자동 컷 성향 프리셋.
+class QualityPreset:
+    """편집 품질 프리셋."""
 
-    시간 단위는 CLI와 맞추기 위해 ms로 저장합니다.
-    - min_silence_ms: 오디오/word gap에서 후보로 볼 최소 무음 길이
-    - pad_after_ms: 직전 발화 뒤에 남길 호흡
-    - pad_before_ms: 다음 발화 앞에 남길 호흡
-    - min_silence_cut_ms: 최종적으로 실제 삭제할 최소 무음 길이
-    - min_keep_between_cuts_ms: 두 컷 사이에 이보다 짧은 말 조각이 끼면 무음 컷을 되살림
-    """
-
+    name: str
     min_silence_ms: int
-    pad_after_ms: int
+    min_cut_ms: int
     pad_before_ms: int
-    min_silence_cut_ms: int
+    pad_after_ms: int
     min_keep_between_cuts_ms: int
-    min_clip_ms: int
     filler_mode: str
+    retakes_enabled: bool
+    max_cuts_per_minute: float | None = None
+    max_remove_ratio: float | None = None
 
 
-QUALITY_PROFILES: dict[str, QualityProfile] = {
-    # 병원/강의/인터뷰 long-form 기본값. 자연스러운 호흡을 남기고 긴 dead air만 제거.
-    "longform": QualityProfile(
-        min_silence_ms=1000,
-        pad_after_ms=280,
-        pad_before_ms=180,
-        min_silence_cut_ms=700,
-        min_keep_between_cuts_ms=1400,
-        min_clip_ms=900,
-        filler_mode="conservative",
-    ),
-    # 일반 유튜브 talking-head. longform보다 조금 빠르지만 0.x초 컷 난사는 막음.
-    "balanced": QualityProfile(
-        min_silence_ms=850,
-        pad_after_ms=220,
-        pad_before_ms=150,
-        min_silence_cut_ms=550,
-        min_keep_between_cuts_ms=1000,
-        min_clip_ms=700,
-        filler_mode="balanced",
-    ),
-    # 쇼츠/릴스용. 빠르게 붙이되 말 앞뒤는 보호.
-    "tight": QualityProfile(
+@dataclass(frozen=True)
+class CutStats:
+    """컷 플랜 품질 진단 수치."""
+
+    clips: int
+    cuts: int
+    removed_seconds: float
+    final_seconds: float
+    removal_ratio: float
+    median_keep_seconds: float
+    median_cut_seconds: float
+    cuts_under_500ms: int
+    cuts_under_800ms: int
+    clips_under_1000ms: int
+    clips_under_2000ms: int
+    verdict: str
+
+
+PRESETS: dict[str, QualityPreset] = {
+    "_legacy": QualityPreset(
+        name="_legacy",
         min_silence_ms=600,
-        pad_after_ms=140,
-        pad_before_ms=90,
-        min_silence_cut_ms=350,
-        min_keep_between_cuts_ms=550,
-        min_clip_ms=350,
-        filler_mode="balanced",
-    ),
-    # 연구/디버깅용. 과거 버전에 가까운 원시 출력.
-    "raw": QualityProfile(
-        min_silence_ms=600,
-        pad_after_ms=0,
+        min_cut_ms=100,
         pad_before_ms=0,
-        min_silence_cut_ms=100,
+        pad_after_ms=0,
         min_keep_between_cuts_ms=0,
-        min_clip_ms=100,
         filler_mode="balanced",
+        retakes_enabled=True,
+        max_cuts_per_minute=None,
+        max_remove_ratio=None,
+    ),
+    # 병원 상담/강의 기본: 호흡을 보존하고 1.4초 이상 긴 정지만 줄임.
+    "safe": QualityPreset(
+        name="safe",
+        min_silence_ms=1400,
+        min_cut_ms=700,
+        pad_before_ms=280,
+        pad_after_ms=280,
+        min_keep_between_cuts_ms=3000,
+        filler_mode="conservative",
+        retakes_enabled=False,
+        max_cuts_per_minute=1.6,
+        max_remove_ratio=0.06,
+    ),
+    "balanced": QualityPreset(
+        name="balanced",
+        min_silence_ms=1150,
+        min_cut_ms=550,
+        pad_before_ms=240,
+        pad_after_ms=240,
+        min_keep_between_cuts_ms=2300,
+        filler_mode="conservative",
+        retakes_enabled=False,
+        max_cuts_per_minute=2.4,
+        max_remove_ratio=0.09,
+    ),
+    # 컷백처럼 빠른 템포를 노리되, 0.3~0.5초 micro cut은 제한.
+    "cutback": QualityPreset(
+        name="cutback",
+        min_silence_ms=950,
+        min_cut_ms=430,
+        pad_before_ms=190,
+        pad_after_ms=210,
+        min_keep_between_cuts_ms=1700,
+        filler_mode="balanced",
+        retakes_enabled=False,
+        max_cuts_per_minute=3.5,
+        max_remove_ratio=0.13,
+    ),
+    "aggressive": QualityPreset(
+        name="aggressive",
+        min_silence_ms=760,
+        min_cut_ms=300,
+        pad_before_ms=140,
+        pad_after_ms=160,
+        min_keep_between_cuts_ms=1100,
+        filler_mode="balanced",
+        retakes_enabled=False,
+        max_cuts_per_minute=5.5,
+        max_remove_ratio=0.18,
     ),
 }
 
+VARIANT_PRESETS: tuple[str, ...] = ("safe", "balanced", "cutback", "aggressive")
 
-def get_profile(name: str | None) -> QualityProfile:
-    """프로필 이름을 안전하게 QualityProfile로 변환합니다."""
-    key = (name or "longform").strip().lower()
-    if key not in QUALITY_PROFILES:
-        allowed = ", ".join(sorted(QUALITY_PROFILES))
-        raise ValueError(f"quality profile은 {allowed} 중 하나여야 합니다.")
-    return QUALITY_PROFILES[key]
+
+def get_preset(name: str | None) -> QualityPreset:
+    key = (name or "safe").strip().lower()
+    if key not in PRESETS:
+        return PRESETS["safe"]
+    return PRESETS[key]
+
+
+def preset_names() -> tuple[str, ...]:
+    return tuple(k for k in PRESETS.keys() if not k.startswith("_"))
+
+
+def preset_pack_names() -> tuple[str, ...]:
+    return VARIANT_PRESETS
 
 
 def _merge_overlaps(cuts: list[CutCandidate]) -> list[CutCandidate]:
-    """겹치는 같은 종류 컷을 병합합니다. 서로 다른 종류는 앞선 컷 reason을 보존합니다."""
+    cleaned = [c for c in cuts if c.end > c.start]
+    cleaned.sort(key=lambda c: (c.start, c.end))
     merged: list[CutCandidate] = []
-    for cut in sorted(cuts, key=lambda c: (c.start, c.end)):
-        if cut.end <= cut.start:
-            continue
+    for cut in cleaned:
         if not merged or cut.start > merged[-1].end:
             merged.append(cut)
             continue
         prev = merged[-1]
-        end = max(prev.end, cut.end)
-        # 의미 컷(간투사/재촬영)이 섞이면 그 종류를 우선 표시합니다.
-        if prev.kind == cut.kind:
-            kind = prev.kind
-            reason = prev.reason
-            text = prev.text or cut.text
-            confidence = max(prev.confidence, cut.confidence)
-        elif prev.kind != CutKind.SILENCE:
-            kind = prev.kind
-            reason = prev.reason
-            text = prev.text
-            confidence = prev.confidence
-        elif cut.kind != CutKind.SILENCE:
-            kind = cut.kind
-            reason = cut.reason
-            text = cut.text
-            confidence = cut.confidence
-        else:
-            kind = prev.kind
-            reason = prev.reason
-            text = prev.text
-            confidence = max(prev.confidence, cut.confidence)
         merged[-1] = prev.model_copy(
-            update={"end": end, "kind": kind, "reason": reason, "text": text, "confidence": confidence}
+            update={
+                "end": max(prev.end, cut.end),
+                "confidence": max(prev.confidence, cut.confidence),
+                "reason": prev.reason if prev.reason == cut.reason else f"{prev.reason} + {cut.reason}",
+            }
         )
     return merged
 
 
+def _drop_tiny_cuts(cuts: list[CutCandidate], min_cut: float) -> list[CutCandidate]:
+    if min_cut <= 0:
+        return cuts
+    result: list[CutCandidate] = []
+    for cut in cuts:
+        if cut.kind == CutKind.SILENCE:
+            floor = min_cut
+        elif cut.kind == CutKind.FILLER:
+            floor = min(0.20, min_cut)
+        elif cut.kind == CutKind.RETAKE:
+            floor = min(0.35, min_cut)
+        else:
+            floor = min_cut
+        if cut.duration >= floor:
+            result.append(cut)
+    return result
+
+
+def _choose_cut_to_restore(left: CutCandidate, right: CutCandidate) -> CutCandidate:
+    priority = {CutKind.RETAKE: 3, CutKind.SILENCE: 2, CutKind.FILLER: 1}
+    lp = priority.get(left.kind, 1)
+    rp = priority.get(right.kind, 1)
+    if lp != rp:
+        return left if lp < rp else right
+    if abs(left.duration - right.duration) > 0.05:
+        return left if left.duration < right.duration else right
+    return left if left.confidence <= right.confidence else right
+
+
+def _cut_score(cut: CutCandidate) -> float:
+    """예산 초과 시 어떤 컷을 우선 살릴지 결정하는 점수."""
+    kind_bonus = {
+        CutKind.RETAKE: 100.0,
+        CutKind.SILENCE: 20.0,
+        CutKind.FILLER: 4.0,
+        CutKind.LOW_INFO: 2.0,
+    }.get(cut.kind, 1.0)
+    return kind_bonus + cut.duration * 10.0 + cut.confidence * 2.0
+
+
+def _apply_cut_budget(
+    cuts: list[CutCandidate],
+    total_duration: float,
+    *,
+    max_cuts_per_minute: float | None,
+    max_remove_ratio: float | None,
+) -> list[CutCandidate]:
+    if not cuts or total_duration <= 0:
+        return cuts
+    kept = list(cuts)
+    if max_cuts_per_minute is not None and max_cuts_per_minute > 0:
+        max_count = max(1, int(math.ceil((total_duration / 60.0) * max_cuts_per_minute)))
+        if len(kept) > max_count:
+            keep_set = set(id(c) for c in sorted(kept, key=_cut_score, reverse=True)[:max_count])
+            kept = [c for c in kept if id(c) in keep_set]
+    if max_remove_ratio is not None and max_remove_ratio > 0:
+        budget = total_duration * max_remove_ratio
+        while kept and sum(c.duration for c in kept) > budget:
+            weakest = min(kept, key=_cut_score)
+            kept.remove(weakest)
+    kept.sort(key=lambda c: c.start)
+    return kept
+
+
 def smooth_cuts(
     cuts: list[CutCandidate],
-    *,
     total_duration: float,
-    min_silence_cut_ms: int = 700,
-    min_keep_between_cuts_ms: int = 1400,
+    *,
+    min_cut_seconds: float,
+    min_keep_between_cuts_seconds: float,
+    max_cuts_per_minute: float | None = None,
+    max_remove_ratio: float | None = None,
 ) -> list[CutCandidate]:
-    """최종 EDL 전에 과분할 컷을 줄입니다.
-
-    이 함수는 내용을 삭제하는 방향이 아니라 **짧은 무음을 되살리는 방향**으로만
-    동작합니다. 그래서 품질 필터가 틀려도 중요한 발화를 더 많이 보존하는 쪽으로
-    실패합니다.
-    """
-    min_silence_cut = max(0, min_silence_cut_ms) / 1000.0
-    min_keep_between = max(0, min_keep_between_cuts_ms) / 1000.0
+    """EDL 과분할을 줄이는 최종 컷 플래너."""
     total_duration = max(0.0, total_duration)
+    cuts = [c for c in cuts if c.end > c.start and c.start < total_duration and c.end > 0]
+    cuts = [c.model_copy(update={"start": max(0.0, c.start), "end": min(total_duration, c.end)}) for c in cuts]
+    cuts = _merge_overlaps(_drop_tiny_cuts(cuts, max(0.0, min_cut_seconds)))
 
-    # 1) 너무 짧은 무음 삭제는 실제 컷으로 보지 않습니다. 간투사/재촬영은 유지.
-    filtered: list[CutCandidate] = []
-    for cut in cuts:
-        if cut.end <= cut.start:
+    if min_keep_between_cuts_seconds > 0 and len(cuts) >= 2:
+        changed = True
+        while changed and len(cuts) >= 2:
+            changed = False
+            for i in range(len(cuts) - 1):
+                keep_len = cuts[i + 1].start - cuts[i].end
+                if 0 <= keep_len < min_keep_between_cuts_seconds:
+                    restore = _choose_cut_to_restore(cuts[i], cuts[i + 1])
+                    cuts.pop(i if restore is cuts[i] else i + 1)
+                    cuts = _merge_overlaps(cuts)
+                    changed = True
+                    break
+
+    cuts = _apply_cut_budget(
+        cuts,
+        total_duration,
+        max_cuts_per_minute=max_cuts_per_minute,
+        max_remove_ratio=max_remove_ratio,
+    )
+    return cuts
+
+
+def contextual_silence_cuts(
+    words: list[Word],
+    total_duration: float,
+    *,
+    preset: QualityPreset,
+    min_silence_ms: int | None = None,
+    pad_before_ms: int | None = None,
+    pad_after_ms: int | None = None,
+    min_cut_ms: int | None = None,
+) -> list[CutCandidate]:
+    """단어 gap 기반 무음 컷 생성.
+
+    Cutback류 도구의 핵심은 fixed threshold가 아니라 말끝/호흡/문맥을 고려하는 것입니다.
+    여기서는 완전한 AI 모델 대신 Whisper word timestamp를 사용해 발화 사이 gap만 대상으로
+    삼고, 문장 경계와 gap 길이로 confidence를 부여합니다.
+    """
+    valid = sorted((w for w in words if w.end > w.start), key=lambda w: (w.start, w.end))
+    if len(valid) < 2:
+        return []
+
+    min_gap = max(0.0, (preset.min_silence_ms if min_silence_ms is None else min_silence_ms) / 1000.0)
+    pad_before = max(0.0, (preset.pad_before_ms if pad_before_ms is None else pad_before_ms) / 1000.0)
+    pad_after = max(0.0, (preset.pad_after_ms if pad_after_ms is None else pad_after_ms) / 1000.0)
+    min_cut = max(0.0, (preset.min_cut_ms if min_cut_ms is None else min_cut_ms) / 1000.0)
+
+    pairs: list[tuple[Word, Word, float]] = []
+    samples: list[float] = []
+    for prev, nxt in zip(valid, valid[1:]):
+        gap = nxt.start - prev.end
+        if gap <= 0:
             continue
-        if cut.kind == CutKind.SILENCE and cut.duration < min_silence_cut:
+        pairs.append((prev, nxt, gap))
+        if 0.12 <= gap <= 12.0:
+            samples.append(gap)
+
+    # 영상마다 말 빠르기가 다르므로 gap 분포를 보고 기준을 올립니다.
+    # 느린 강의/상담 영상에서는 0.8초 쉼도 자연스러운 호흡일 수 있습니다.
+    q_by_profile = {"safe": 0.88, "balanced": 0.80, "cutback": 0.70, "aggressive": 0.58}
+    q = q_by_profile.get(preset.name, 0.0)
+    if q and len(samples) >= 8:
+        ordered = sorted(samples)
+        pos = q * (len(ordered) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(ordered) - 1)
+        frac = pos - lo
+        adaptive_gap = ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+        threshold = max(min_gap, adaptive_gap)
+    else:
+        threshold = min_gap
+
+    candidates: list[CutCandidate] = []
+    for prev, nxt, gap in pairs:
+        if gap < threshold:
             continue
-        filtered.append(cut)
-
-    merged = _merge_overlaps(filtered)
-    if not merged or min_keep_between <= 0:
-        return merged
-
-    # 2) 두 무음 컷 사이에 짧은 말 조각이 끼면 양옆 무음 컷을 되살립니다.
-    #    예: "왔다" [0.25s] "갔다" 같은 짧은 조각 주변을 계속 자르면 1프레임
-    #    튀는 점프컷이 생깁니다. 이런 경우는 그냥 이어 두는 편이 훨씬 자연스럽습니다.
-    drop: set[int] = set()
-    for i in range(len(merged) - 1):
-        left = merged[i]
-        right = merged[i + 1]
-        keep_len = right.start - left.end
-        if keep_len <= 0 or keep_len >= min_keep_between:
+        # 짧은 gap일수록 여유를 더 남겨 숨과 말끝을 보존합니다.
+        extra_breath = max(0.0, min(0.16, (1.60 - gap) * 0.10))
+        start = prev.end + pad_after + extra_breath
+        end = nxt.start - pad_before - extra_breath
+        dur = end - start
+        if dur < min_cut:
             continue
-        if left.kind == CutKind.SILENCE and right.kind == CutKind.SILENCE:
-            drop.add(i)
-            drop.add(i + 1)
-        elif left.kind == CutKind.SILENCE and right.kind != CutKind.SILENCE:
-            drop.add(i)
-        elif right.kind == CutKind.SILENCE and left.kind != CutKind.SILENCE:
-            drop.add(i + 1)
+        prev_txt = prev.word.strip()
+        nxt_txt = nxt.word.strip()
+        boundary_bonus = 0.06 if prev_txt.endswith((".", "?", "!", "다", "요", "죠", "네")) else 0.0
+        long_bonus = min(0.18, max(0.0, gap - threshold) / 6.0)
+        confidence = min(0.98, 0.76 + long_bonus + boundary_bonus)
+        candidates.append(
+            CutCandidate(
+                start=start,
+                end=end,
+                kind=CutKind.SILENCE,
+                reason=f"문맥 무음 gap {gap:.2f}초 → {dur:.2f}초 삭제 · {preset.name}",
+                text=f"{prev_txt} … {nxt_txt}".strip(),
+                confidence=confidence,
+            )
+        )
+    return candidates
 
-    if not drop:
-        return merged
 
-    smoothed = [c for i, c in enumerate(merged) if i not in drop]
-    return _merge_overlaps(smoothed)
+def invert_cuts(cuts: list[CutCandidate], total_duration: float) -> list[tuple[float, float]]:
+    if not math.isfinite(total_duration) or total_duration <= 0:
+        return []
+    merged: list[list[float]] = []
+    for cut in sorted(cuts, key=lambda c: (c.start, c.end)):
+        s, e = max(0.0, cut.start), min(total_duration, cut.end)
+        if e <= s:
+            continue
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    keep: list[tuple[float, float]] = []
+    cursor = 0.0
+    for s, e in merged:
+        if s > cursor:
+            keep.append((cursor, s))
+        cursor = max(cursor, e)
+    if cursor < total_duration:
+        keep.append((cursor, total_duration))
+    return keep
 
 
-def edl_quality_stats(keep_ranges: list[tuple[float, float]], total_duration: float) -> dict[str, float]:
-    """EDL/keep range 품질 지표를 계산합니다. 테스트와 리포트용입니다."""
-    durations = [max(0.0, e - s) for s, e in keep_ranges if e > s]
-    gaps = [max(0.0, b[0] - a[1]) for a, b in zip(keep_ranges, keep_ranges[1:])]
-    removed = sum(gaps)
-    return {
-        "clips": float(len(keep_ranges)),
-        "total_duration": max(0.0, total_duration),
-        "kept_duration": sum(durations),
-        "removed_duration": removed,
-        "removed_percent": (removed / total_duration * 100.0) if total_duration > 0 else 0.0,
-        "sub_1s_clips": float(sum(d < 1.0 for d in durations)),
-        "sub_2s_clips": float(sum(d < 2.0 for d in durations)),
-        "sub_500ms_gaps": float(sum(0.0 < g < 0.5 for g in gaps)),
-        "sub_800ms_gaps": float(sum(0.0 < g < 0.8 for g in gaps)),
-    }
+def diagnose_cuts(cuts: list[CutCandidate], total_duration: float) -> CutStats:
+    duration = max(0.0, total_duration if math.isfinite(total_duration) else 0.0)
+    keep = invert_cuts(cuts, duration)
+    cut_durs = [c.duration for c in cuts if c.duration > 0]
+    keep_durs = [e - s for s, e in keep if e > s]
+    removed = sum(cut_durs)
+    final = max(0.0, duration - removed)
+    ratio = (removed / duration) if duration > 0 else 0.0
+    med_keep = statistics.median(keep_durs) if keep_durs else 0.0
+    med_cut = statistics.median(cut_durs) if cut_durs else 0.0
+    clips_under_1 = sum(d < 1.0 for d in keep_durs)
+    clips_under_2 = sum(d < 2.0 for d in keep_durs)
+    cuts_under_05 = sum(d < 0.5 for d in cut_durs)
+    cuts_under_08 = sum(d < 0.8 for d in cut_durs)
+
+    if len(keep) > max(80, duration / 8) or cuts_under_05 > 5 or (cut_durs and med_cut < 0.50):
+        verdict = "과분할 위험"
+    elif ratio > 0.18 or clips_under_2 > max(5, len(keep) // 5):
+        verdict = "검토 필요"
+    else:
+        verdict = "안전"
+
+    return CutStats(
+        clips=len(keep),
+        cuts=len(cut_durs),
+        removed_seconds=removed,
+        final_seconds=final,
+        removal_ratio=ratio,
+        median_keep_seconds=med_keep,
+        median_cut_seconds=med_cut,
+        cuts_under_500ms=cuts_under_05,
+        cuts_under_800ms=cuts_under_08,
+        clips_under_1000ms=clips_under_1,
+        clips_under_2000ms=clips_under_2,
+        verdict=verdict,
+    )

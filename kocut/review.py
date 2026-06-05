@@ -85,6 +85,104 @@ def write_review(meta: Meta, out_path: Path, *, fps: float = 30.0) -> Path:
             ],
         ]
 
+    if meta.review_candidates:
+        lines += [
+            "",
+            "## 검토 필요 — 문장 단위 말실수/반복/저정보 후보",
+            "",
+            "_v0.8부터 자동 컷하지 않고 리뷰 CSV에 남깁니다. `*.review_decisions.csv`의 decision 열에 cut을 적은 뒤 `kocut apply-decisions`로 새 EDL을 만들 수 있습니다._",
+            "",
+            "| 시작 | 끝 | 길이 | 종류 | 신뢰도 | 이유 | 텍스트 |",
+            "|---|---|---:|---|---:|---|---|",
+            *[
+                f"| {_tc(c.start)} | {_tc(c.end)} | {c.duration:.2f}s | {_KIND_KR.get(c.kind, c.kind)} | {c.confidence:.2f} | {c.reason} | {c.text.strip()} |"
+                for c in sorted(meta.review_candidates, key=lambda c: c.start)
+            ],
+        ]
+
+    if meta.topic_sections:
+        lines += [
+            "",
+            "## 토픽/챕터 후보",
+            "",
+            "| # | 구간 | 제목 | 키워드 |",
+            "|---:|---|---|---|",
+            *[
+                f"| {t.index} | {_tc(t.start)}–{_tc(t.end)} | {t.title} | {', '.join(t.keywords)} |"
+                for t in meta.topic_sections
+            ],
+        ]
+
+    if meta.utterances:
+        lines += [
+            "",
+            "## Paper edit 요약",
+            "",
+            f"- 문장/호흡 단위: {len(meta.utterances)}개",
+            "- 전체 목록은 `*.paper_edit.csv`와 `*.director_review.html`에서 확인하세요.",
+        ]
+
     lines.append("")
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def _fmt_seconds(seconds: float) -> str:
+    return f"{max(0.0, seconds):.1f}s"
+
+
+def write_variants_review(
+    source_name: str,
+    out_path: Path,
+    *,
+    duration: float,
+    variants: dict[str, list[CutCandidate]],
+) -> Path:
+    """여러 컷 프리셋을 한 번에 비교하는 마크다운 리포트를 저장합니다.
+
+    컷백처럼 프리셋을 바꿔가며 결과를 빠르게 비교할 수 있게, 같은 전사 결과에서
+    safe/balanced/cutback/aggressive EDL을 동시에 만들고 수치를 보여줍니다.
+    """
+    from kocut import quality
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"# KoCut 프리셋 비교 — {source_name}",
+        "",
+        "한 번의 전사 결과에서 여러 컷 강도를 동시에 만든 비교표입니다.",
+        "Premiere/DaVinci에는 먼저 `safe` 또는 `balanced`를 넣고, 너무 느슨하면 `cutback`을 보세요.",
+        "",
+        "| 프리셋 | 판정 | 클립 수 | 컷 수 | 제거 시간 | 결과 길이 | 컷 중앙값 | 0.5초 미만 컷 | 2초 미만 클립 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, cuts in variants.items():
+        stats = quality.diagnose_cuts(cuts, duration)
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    name,
+                    stats.verdict,
+                    str(stats.clips),
+                    str(stats.cuts),
+                    _fmt_seconds(stats.removed_seconds),
+                    _fmt_seconds(stats.final_seconds),
+                    _fmt_seconds(stats.median_cut_seconds),
+                    str(stats.cuts_under_500ms),
+                    str(stats.clips_under_2000ms),
+                ]
+            )
+            + " |"
+        )
+
+    lines += [
+        "",
+        "## 읽는 법",
+        "",
+        "- `과분할 위험`이면 컷백 느낌이 아니라 자잘한 점프컷이 생길 가능성이 큽니다.",
+        "- 상담/강의/인터뷰 longform은 보통 `safe` 또는 `balanced`가 시작점입니다.",
+        "- 쇼츠/릴스처럼 빠른 템포가 목적일 때만 `aggressive`를 확인하세요.",
+        "",
+    ]
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path

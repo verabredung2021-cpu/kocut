@@ -15,7 +15,7 @@ LLM을 쓰지 않는 결정적(deterministic) 로직입니다.
 """
 from __future__ import annotations
 
-from kocut.types import CutCandidate, Word
+from kocut.types import CutCandidate, CutKind, Word
 
 
 def _kept_word_spans(cuts: list[CutCandidate], words: list[Word]) -> list[tuple[float, float]]:
@@ -61,13 +61,21 @@ def refine_cuts(
         s, e = cut.start, cut.end
         if kept:
             center = 0.5 * (s + e)
+            # 간투사는 단어 자체가 짧아서 silence용 200ms+ 패딩을 그대로 적용하면
+            # 컷이 0초로 쪼그라듭니다. 말 씹힘 방지만 위해 최소 보호 여백을 씁니다.
+            local_pad_before = (
+                min(pad_before, 0.02) if cut.kind == CutKind.FILLER and pad_before > 0.15 else pad_before
+            )
+            local_pad_after = (
+                min(pad_after, 0.02) if cut.kind == CutKind.FILLER and pad_after > 0.15 else pad_after
+            )
             # 컷 중심 기준으로 좌/우에 가장 가까운 유지 단어 경계를 찾습니다.
             prev_ends = [we for (_ws, we) in kept if we <= center]
             next_starts = [ws for (ws, _we) in kept if ws >= center]
             if prev_ends:
-                s = max(s, max(prev_ends) + pad_after)
+                s = max(s, max(prev_ends) + local_pad_after)
             if next_starts:
-                e = min(e, min(next_starts) - pad_before)
+                e = min(e, min(next_starts) - local_pad_before)
         if e - s <= 0:
             continue
         if min_cut > 0 and (e - s) < min_cut:

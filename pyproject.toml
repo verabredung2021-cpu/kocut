@@ -1,6 +1,6 @@
 ﻿[project]
 name = "kocut"
-version = "0.5.1"
+version = "0.8.0"
 description = "?쒓뎅???곸긽 ?먮룞 ?몄쭛 蹂댁“ ?꾧뎄 (?먮쭑 + 而??꾨낫 異붿텧)"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

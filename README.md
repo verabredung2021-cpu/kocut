@@ -22,6 +22,103 @@
 | 재촬영 검출 | NG 마커 + 반복 발화 유사도 |
 | 쇼츠 후보 | 한국어 훅·감정 키워드 점수로 9:16 구간 추천 |
 
+## v0.8.0 Director 패치 — 문장 단위 paper edit + 리뷰 결정 루프
+
+0.8.0은 컷백을 따라잡기 위해 방향을 다시 바꾼 버전입니다. 단어 gap이나 RMS threshold만으로 자르지 않고, 먼저 **문장/호흡 단위**를 만든 뒤 문장 사이의 긴 정지만 컷합니다.
+
+추가된 것:
+
+- `--director-mode` 기본 활성화: 문장 내부의 짧은 호흡은 보호하고, 문장 경계 무음만 컷 후보로 만듭니다.
+- `*.paper_edit.csv`: 전체 발화를 문장/호흡 단위로 정리한 paper edit 표.
+- `*.director_review.html`: 브라우저에서 자동 컷, 리뷰 후보, 토픽/챕터 후보를 한눈에 확인하는 리뷰 화면.
+- `*.review_decisions.csv`: 말실수/반복/저정보/애매 간투사 후보를 수동 검수하는 CSV.
+- `kocut apply-decisions`: CSV의 `decision` 열에 `cut` 또는 `keep`을 적은 뒤 새 EDL을 다시 생성.
+- 메타 JSON에 `utterances`, `topic_sections`, `review_candidates` 추가.
+
+권장 실행:
+
+```powershell
+kocut process "D:\path\to\video.mp4" `
+  --device cuda `
+  --compute-type float16 `
+  --cut-preset safe `
+  --director-mode `
+  --write-variants `
+  -v
+```
+
+검수 후 EDL 다시 만들기:
+
+```powershell
+# 1) *.director_review.html을 열어 확인
+# 2) *.review_decisions.csv의 decision 열에 cut 또는 keep 입력
+# 3) 새 EDL 생성
+kocut apply-decisions "D:\out\C0433.meta.json" "D:\out\C0433.review_decisions.csv" `
+  -o "D:\out\C0433.final_reviewed.edl" `
+  --fps 23.976
+```
+
+기존 0.7 방식으로 비교하고 싶으면 `--word-gap-mode`를 사용하세요.
+
+
+## v0.7.0 컷백 추격 패치 — context-aware word-gap planner
+
+0.7.0은 단순 무음 threshold 튜닝이 아니라, 컷백이 내세우는 “문맥적 무음 처리”에 더 가까운 구조로 바꾼 버전입니다.
+
+- word timestamp가 있으면 RMS 볼륨 threshold보다 **단어 사이 gap**을 우선합니다. 짧은 호흡과 말끝을 살리기 위해 발화 구간 안쪽으로 컷을 제한합니다.
+- `safe / balanced / cutback / aggressive` 프리셋별로 **컷 예산**을 둡니다. 분당 컷 수와 전체 삭제 비율이 과하면 낮은 가치의 컷을 되살려 과분할을 막습니다.
+- 기본 CLI 실행에서 프리셋 EDL을 동시에 출력합니다. 한 번의 Whisper 분석으로 `*.cuts.safe.edl`, `*.cuts.balanced.edl`, `*.cuts.cutback.edl`, `*.cuts.aggressive.edl`을 비교할 수 있습니다.
+- `*.cut_variants.md` 리포트에 각 프리셋의 컷 수, 삭제 시간, 예상 결과 길이를 정리합니다.
+- 라이브러리 호환용 기본값 `_legacy`는 유지하지만, CLI 기본값은 `safe`입니다.
+
+권장 실행:
+
+```powershell
+kocut process "D:\path\to\video.mp4" `
+  --device cuda `
+  --compute-type float16 `
+  --cut-preset safe `
+  --write-variants `
+  -v
+```
+
+결과 확인 순서:
+
+1. `*.cuts.safe.edl` — 상담/강의 기본, 가장 자연스러움
+2. `*.cuts.balanced.edl` — 조금 더 편집감 있음
+3. `*.cuts.cutback.edl` — 컷백식 빠른 템포에 가장 가까운 후보
+4. `*.cuts.aggressive.edl` — 쇼츠/릴스용, 롱폼에는 과할 수 있음
+
+## v0.6.0 품질 패치 — 과분할 컷 방지
+
+0.5.x 결과가 17분 영상에서 200개 이상으로 쪼개지는 문제를 근본적으로 줄였습니다.
+
+- 기본 컷 프리셋을 `safe`로 변경했습니다. 짧은 호흡을 보존하고, 긴 정지만 줄이는 rough cut 중심입니다.
+- `--cut-preset safe / balanced / cutback / aggressive` 옵션을 추가했습니다.
+- word timestamp가 있으면 RMS 무음 대신 **단어 사이 gap** 기준으로 긴 무음만 자릅니다.
+- 0.3~0.5초짜리 마이크로 삭제 컷을 기본적으로 버립니다.
+- 두 컷 사이에 1~2초짜리 고립 클립이 생기면 주변 컷 하나를 되살려 타임라인을 부드럽게 만듭니다.
+- 재촬영/NG 자동 컷은 기본 꺼짐입니다. 필요할 때만 `--detect-retakes`로 켭니다.
+- 기존 망한 EDL 진단용 `kocut diagnose-edl` 명령을 추가했고, `repair-edl` 기본값을 더 안전한 `--min-gap-ms 1000`으로 올렸습니다.
+
+권장 실행:
+
+```powershell
+kocut process "D:\path\to\video.mp4" --device cuda --compute-type float16 --cut-preset safe -v
+```
+
+컷백처럼 더 빠른 템포를 보고 싶을 때:
+
+```powershell
+kocut process "D:\path\to\video.mp4" --device cuda --compute-type float16 --cut-preset cutback -v
+```
+
+이미 만들어진 과분할 EDL 진단/복구:
+
+```powershell
+kocut diagnose-edl C0433.cuts.edl --fps 23.976
+kocut repair-edl C0433.cuts.edl --min-gap-ms 1000 --fps 23.976
+```
 
 ## v0.5.0 패치 내용
 
@@ -248,9 +345,11 @@ kocut/
 - **v0.2**: Gradio GUI — 드래그앤드롭/경로 입력, 결과 탭, 다운로드 ✅
 - **v0.3**: 단어 경계 컷 보정 + 컷 안정화 옵션 + FCPXML export(beta) ✅
 - **v0.4**: ffprobe 자동 감지 + 컷 미리보기 리포트 + 간투사 3단계 + CLI·GUI 통합 ✅
-- **v0.5 (현재)**: `repair-edl` 복구 명령 + 재촬영 오검출 수정 + 자막 정리 확장 ✅ ← **지금 여기**
+- **v0.5**: `repair-edl` 복구 명령 + 재촬영 오검출 수정 + 자막 정리 확장 ✅ ← **지금 여기**
 - v0.5.x (남음): 드롭프레임(29.97), OTIO export, 컷 프리셋(safe/balanced/tight)
-- v0.6: 한국어 자연어 명령("8분으로 줄여줘"), transcript 검색/DB, 멀티캠 화자 분리(pyannote)
+- v0.6: 단어 gap 기반 컷 품질 엔진, 프리셋 비교 리포트 ✅
+- **v0.7 (현재)**: 컷 예산/문맥 gap/프리셋 EDL 기본 출력 ✅
+- v0.8: 한국어 자연어 명령("8분으로 줄여줘"), transcript 검색/DB, 멀티캠 화자 분리(pyannote)
 
 ### 오픈소스 벤치마킹 메모 (참고만, 미구현)
 
@@ -265,3 +364,39 @@ kocut/
 
 - faster-whisper (MIT), Kiwi (LGPL), librosa (ISC), rapidfuzz (MIT)
 - Whisper 모델: OpenAI (MIT). 한국어 fine-tune 모델 사용 시 `-m ghost613/whisper-large-v3-turbo-korean`
+
+## v0.7.0 — Cutback 추격용 컷 품질 엔진
+
+v0.7.0은 단순 무음 threshold 방식에서 한 단계 벗어나, **단어 gap 기반 + 컷 예산 + 프리셋 비교** 방식으로 컷 품질을 개선합니다.
+
+핵심 변경:
+
+- 기본 CLI 프리셋은 `safe`입니다. 병원 상담/강의/인터뷰처럼 말맛이 중요한 영상에서 짧은 호흡을 보존합니다.
+- word timestamp가 있으면 RMS 볼륨 threshold보다 **단어 사이 gap**을 우선 사용합니다.
+- `safe / balanced / cutback / aggressive` 프리셋별로 최소 무음 길이, 삭제 최소 길이, 앞뒤 패딩, 분당 컷 수, 삭제 비율 예산을 다르게 적용합니다.
+- `--write-variants`가 기본 켜짐이라 한 번의 Whisper 분석으로 네 가지 EDL을 동시에 생성합니다.
+- `*.cut_variants.md`에서 프리셋별 컷 수, 삭제 시간, 결과 길이, 과분할 위험 여부를 비교할 수 있습니다.
+- `diagnose-edl`과 `repair-edl`은 기존 과분할 EDL을 빠르게 진단/복구하는 용도로 유지됩니다.
+
+권장 실행:
+
+```powershell
+python -m kocut process "D:\260507_대표원장님\C0430.mp4" `
+  --output-dir "D:\260507_대표원장님\kocut_out_v070" `
+  --device cuda `
+  --compute-type float16 `
+  --cut-preset safe `
+  --write-variants `
+  --keep-wav `
+  -v
+```
+
+출력된 EDL은 아래 순서로 확인하세요.
+
+1. `*.cuts.safe.edl` — 가장 자연스러운 longform 시작점
+2. `*.cuts.balanced.edl` — 일반 유튜브 초벌
+3. `*.cuts.cutback.edl` — 컷백식 빠른 템포에 가까운 후보
+4. `*.cuts.aggressive.edl` — 쇼츠/빠른 편집용
+
+KoCut은 아직 Cutback 전체 제품군처럼 Premiere 내부 멀티트랙/멀티캠/토픽 stringout/B-roll 자동 배치까지 구현하지 않습니다. v0.7.0의 목표는 우선 **한국어 talking-head 영상에서 허접한 마이크로 점프컷을 줄이고, 편집자가 골라 쓸 수 있는 rough cut 후보를 안정적으로 만드는 것**입니다.
+

@@ -255,3 +255,58 @@ def write_meta_json(meta: Meta, out_path: Path) -> Path:
         encoding="utf-8",
     )
     return out_path
+
+
+def write_cut_review_csv(cuts: list[CutCandidate], out_path: Path) -> Path:
+    """자동 적용 컷 목록을 CSV로 저장합니다.
+
+    엑셀/구글시트에서 컷 후보를 훑어볼 수 있게 단순 UTF-8-SIG CSV로 씁니다.
+    """
+    import csv
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["index", "start", "end", "duration", "kind", "confidence", "reason", "text"])
+        for i, cut in enumerate(sorted(cuts, key=lambda c: c.start), start=1):
+            writer.writerow([
+                i,
+                f"{cut.start:.3f}",
+                f"{cut.end:.3f}",
+                f"{cut.duration:.3f}",
+                cut.kind,
+                f"{cut.confidence:.3f}",
+                cut.reason,
+                cut.text,
+            ])
+    return out_path
+
+
+def write_keep_ranges_csv(
+    cuts: list[CutCandidate],
+    total_duration: float,
+    out_path: Path,
+    *,
+    min_clip_seconds: float = 0.0,
+) -> Path:
+    """EDL/FCPXML에 실제로 남는 구간을 CSV로 저장합니다."""
+    import csv
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    keep_ranges = _invert_cuts(cuts, total_duration, min_keep=max(0.0, min_clip_seconds))
+    record_cursor = 0.0
+    with out_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["index", "source_start", "source_end", "source_duration", "record_start", "record_end"])
+        for i, (s, e) in enumerate(keep_ranges, start=1):
+            dur = e - s
+            writer.writerow([
+                i,
+                f"{s:.3f}",
+                f"{e:.3f}",
+                f"{dur:.3f}",
+                f"{record_cursor:.3f}",
+                f"{record_cursor + dur:.3f}",
+            ])
+            record_cursor += dur
+    return out_path
