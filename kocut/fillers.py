@@ -1,71 +1,73 @@
 """간투사(filler) 검출.
 
-'어', '음', '그', '저' 같은 군더더기 발화를 단어 단위 타임스탬프 기준으로
-찾아 컷 후보로 만듭니다. Kiwi의 감탄사(IC) 태그와 명시적 어휘 목록을 함께
-사용하며, '어?'(의문 종결)처럼 간투사가 아닌 경우를 걸러냅니다.
+v0.9부터는 한국어 연결어를 자동으로 자르지 않습니다. 이전 버전은 Kiwi의 MAJ
+태그를 그대로 신뢰해 ``근데/그래서/그리고/그런데`` 같은 담화 표지를 간투사로
+잘라버렸고, 정상 문장 리듬이 망가졌습니다.
+
+기본 정책:
+- ``이제``는 사용자 선호에 맞춰 강제 자동 컷 후보로 보냅니다.
+- ``어/음/아/에/흠``처럼 짧은 순수 감탄사만 안전 간투사로 봅니다.
+- ``근데/그래서/그리고/그런데`` 등 연결어는 자동 컷도 리뷰 후보도 만들지 않습니다.
 """
 from __future__ import annotations
 
-from kocut.korean import get_analyzer
 from kocut.types import CutCandidate, CutKind, Word
 
-
-# 명시적 간투사 어휘 (Kiwi 태그만으로는 놓치는 것들 보강)
-_FILLER_WORDS = {
-    "어", "음", "아", "그", "그러니까", "뭐", "막", "약간",
-    "저기", "이제", "에", "흠", "어어", "음음", "그그", "뭐랄까",
+_FORCE_DELETE_FILLERS = {"이제"}
+_CORE_FILLERS = {"어", "음", "아", "에", "흠", "어어", "음음"}
+_PROTECTED_DISCOURSE_MARKERS = {
+    "근데", "그래서", "그리고", "그런데", "그래도", "그러니까", "그러면", "그럼",
+    "또는", "하지만", "다만", "그다음", "그다음에", "다음에", "일단", "자",
+    "그", "저", "뭐", "막", "약간", "요거", "이거", "그거", "네",
 }
-# 거의 항상 군더더기인 핵심 간투사 (높은 confidence). 그 외는 문맥상 의미가
-# 있을 수 있어 낮은 confidence로 두고, --filler-mode에서 자동 컷 여부를 정합니다.
-_CORE_FILLERS = {"어", "음", "아", "에", "흠", "어어", "음음", "그그"}
-# 간투사로 판정할 형태소 태그 (감탄사, 접속부사)
-_FILLER_TAGS = {"IC", "MAJ"}
-# 간투사 최대 길이 — 이보다 길면 실제 의미 발화일 가능성
-_MAX_FILLER_DURATION = 0.7
+_MAX_CORE_FILLER_DURATION = 0.75
+_MAX_FORCE_DELETE_DURATION = 1.35
 
 
-def detect_fillers(words: list[Word], padding: float = 0.08) -> list[CutCandidate]:
-    """단어 리스트에서 간투사 컷 후보를 검출합니다."""
-    if padding < 0:
-        padding = 0.0
-    analyzer = get_analyzer()
+def _clean_token(text: str) -> str:
+    return text.strip().strip('"\'“”‘’').rstrip("?!.,…")
+
+
+def detect_fillers(words: list[Word], padding: float = 0.06) -> list[CutCandidate]:
+    """단어 리스트에서 안전한 간투사 컷 후보를 검출합니다."""
+    padding = max(0.0, padding)
     cuts: list[CutCandidate] = []
-
     for word in words:
         raw = word.word.strip()
-        # 의문/감탄 부호로 끝나면 간투사가 아니라 실제 발화 — 제외
-        if raw.endswith(("?", "!", ".")):
+        if raw.endswith(("?", "!")):
             continue
-        clean = raw.rstrip("?!.,…\"' ")
+        clean = _clean_token(raw)
         if not clean:
             continue
-
-        duration = word.end - word.start
-        is_filler = False
-
-        tokens = analyzer.tokenize(clean)
-        # 단일 형태소이고 감탄사/접속부사 태그
-        if len(tokens) == 1 and tokens[0].tag in _FILLER_TAGS:
-            is_filler = True
-        # 명시적 간투사 어휘 + 짧은 길이
-        if clean in _FILLER_WORDS and duration < _MAX_FILLER_DURATION:
-            is_filler = True
-
-        # 너무 길면 간투사 아님 (false positive 방지)
-        if duration >= _MAX_FILLER_DURATION:
-            is_filler = False
-
-        if is_filler:
-            confidence = 0.9 if clean in _CORE_FILLERS else 0.6
+        duration = max(0.0, word.end - word.start)
+        if clean in _FORCE_DELETE_FILLERS:
+            if duration <= _MAX_FORCE_DELETE_DURATION or duration == 0:
+                cuts.append(
+                    CutCandidate(
+                        start=max(0.0, word.start - padding),
+                        end=word.end + padding,
+                        kind=CutKind.FILLER,
+                        reason="사용자 기본 삭제어 '이제'",
+                        text=clean,
+                        confidence=0.99,
+                    )
+                )
+            continue
+        if clean in _PROTECTED_DISCOURSE_MARKERS:
+            continue
+        if clean in _CORE_FILLERS and duration <= _MAX_CORE_FILLER_DURATION:
             cuts.append(
                 CutCandidate(
                     start=max(0.0, word.start - padding),
                     end=word.end + padding,
                     kind=CutKind.FILLER,
-                    reason=f"간투사 '{clean}'",
+                    reason=f"순수 간투사 '{clean}'",
                     text=clean,
-                    confidence=confidence,
+                    confidence=0.92,
                 )
             )
-
     return cuts
+
+
+FORCE_DELETE_FILLERS = frozenset(_FORCE_DELETE_FILLERS)
+PROTECTED_DISCOURSE_MARKERS = frozenset(_PROTECTED_DISCOURSE_MARKERS)

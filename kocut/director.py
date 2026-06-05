@@ -1,16 +1,7 @@
 """문장 단위 rough-cut 플래너.
 
-v0.8의 목표는 단순히 gap을 많이 자르는 것이 아니라, 편집자가 검수할 수 있는
-"문장 단위 paper edit"를 만드는 것입니다. 컷백류 도구가 강한 이유는 무음 자체보다
-말의 단위와 재촬영/말실수 후보를 묶어 보여주는 워크플로에 있으므로, 이 모듈은
-다음을 제공합니다.
-
-- Whisper word timestamps → 문장/호흡 단위 Utterance 생성
-- 문장 사이 gap만 대상으로 하는 무음 컷 후보 생성
-- 반복 발화, NG 마커, filler cluster 등 리뷰 후보 생성
-- paper edit CSV / review CSV / HTML 리뷰 출력
-
-모든 로직은 로컬 규칙 기반입니다. LLM·인터넷 호출 없이 결정적으로 동작합니다.
+v0.9의 목표는 "더 많이 자르기"가 아니라 편집자가 납득할 수 있는 판단을
+만드는 것입니다. 자동 컷은 확실한 것만 적용하고, 나머지는 CSV/HTML에서 검토합니다.
 """
 from __future__ import annotations
 
@@ -40,14 +31,29 @@ _STUMBLE_MARKERS = (
     "아니", "아 아니다", "아닌데", "그게 아니라", "잠깐만", "잠시만", "죄송",
     "틀렸", "잘못", "다시 말", "뭐였지", "어디까지", "말이 안", "헷갈",
 )
-_GENERIC_LOW_INFO = {"네", "네네", "자", "그러면", "그럼", "좋습니다", "좋아요", "알겠습니다", "오케이", "오케이요", "이제", "자 이제"}
-_FILLER_WORDS = {"어", "음", "아", "그", "저", "뭐", "막", "약간", "이제", "저기", "흠"}
-_TOPIC_KEYWORDS = (
-    "결론", "핵심", "중요", "문제", "이유", "방법", "수술", "치료", "검사", "증상",
-    "원인", "비용", "회복", "부작용", "위험", "장점", "단점", "예방", "관리", "진단",
-    "자궁", "난소", "임신", "호르몬", "생리", "통증", "초음파", "시술", "상담",
+_GENERIC_LOW_INFO = {"네", "네네", "자", "좋습니다", "좋아요", "알겠습니다", "오케이", "오케이요"}
+_FILLER_WORDS = {"어", "음", "아", "에", "흠", "이제"}
+_PROTECTED_CONNECTORS = {"근데", "그래서", "이제", "그리고", "그런데", "그래도", "그러니까", "그러면", "그럼", "또는"}
+_PRODUCTION_MARKERS = (
+    "촬영 준비", "구도", "인사부터 다시", "다시 하세요", "다시 해주세요",
+    "조금만 보고 할게요", "보고 할게요", "잠깐만요", "잠깐만", "잠시만",
+    "끝났습니다", "잘 편집", "편집해 주시고", "카메라", "마이크", "오디오",
+    "녹음", "대기", "컷", "커트", "스탑", "스톱",
 )
-_GENERIC_LOW_INFO_NORMALISED = set()
+_SOFT_PRODUCTION_MARKERS = (
+    "안녕하세요", "원장님 이번에", "네 감사합니다", "감사합니다", "맞아요", "네.", "네",
+)
+_TOPIC_KEYWORDS = (
+    "AMH", "FSH", "NK세포", "NK", "자궁경", "자궁근종", "조기 폐경", "조기폐경",
+    "난소 저반응", "난소저반응", "난소", "난포", "공난포", "난자", "배아", "착상",
+    "내막", "에스트로겐", "에스로겐", "프로게스테론", "프로게스토리", "면역글로블린",
+    "난자활성화", "난자 활성화", "미세수정", "미세 수정", "방추사", "방수사",
+    "3일 배아", "5일 배아", "오일 배아", "시험관", "이식", "채취", "임신",
+    "결론", "핵심", "중요", "문제", "이유", "방법", "수술", "치료", "검사", "증상",
+    "원인", "위험", "관리", "진단", "호르몬", "생리", "시술", "상담",
+)
+_QUESTION_HINTS = ("있나요", "인가요", "까요", "어떻게 생각", "이유가", "말씀이", "들었는데", "하나요", "했는데요")
+_GENERIC_LOW_INFO_NORMALISED: set[str] = set()
 
 
 def _clean_word(text: str) -> str:
@@ -93,6 +99,25 @@ def _fmt_time(seconds: float) -> str:
     if h:
         return f"{h}:{m:02d}:{s:04.1f}"
     return f"{m}:{s:04.1f}"
+
+
+def _looks_like_production_text(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip())
+    norm = _normalise_for_match(compact)
+    return any(_normalise_for_match(marker) in norm for marker in _PRODUCTION_MARKERS)
+
+
+def _looks_like_soft_production_text(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip())
+    if len(compact) > 34:
+        return False
+    norm = _normalise_for_match(compact)
+    return any(_normalise_for_match(marker) in norm for marker in _SOFT_PRODUCTION_MARKERS)
+
+
+def _looks_like_question(text: str) -> bool:
+    t = text.strip()
+    return "?" in t or any(h in t for h in _QUESTION_HINTS)
 
 
 def build_utterances(
@@ -221,20 +246,76 @@ def sentence_boundary_silence_cuts(
     return cuts
 
 
+def detect_production_cuts(utterances: list[Utterance]) -> list[CutCandidate]:
+    """촬영 지시/제작 현장 멘트를 자동 제거 후보로 검출합니다."""
+    units = sorted(utterances, key=lambda u: (u.start, u.end))
+    hits: set[int] = set()
+    for i, u in enumerate(units):
+        if not _looks_like_production_text(u.text):
+            continue
+        hits.add(i)
+        j = i - 1
+        while j >= 0 and units[j + 1].start - units[j].end <= 2.6 and _looks_like_soft_production_text(units[j].text):
+            hits.add(j)
+            j -= 1
+        j = i + 1
+        while j < len(units) and units[j].start - units[j - 1].end <= 2.6 and _looks_like_soft_production_text(units[j].text):
+            hits.add(j)
+            j += 1
+
+    if not hits:
+        return []
+    ranges: list[tuple[int, int]] = []
+    ordered = sorted(hits)
+    start = prev = ordered[0]
+    for idx in ordered[1:]:
+        if idx == prev + 1 or units[idx].start - units[prev].end <= 2.6:
+            prev = idx
+            continue
+        ranges.append((start, prev))
+        start = prev = idx
+    ranges.append((start, prev))
+
+    cuts: list[CutCandidate] = []
+    for a, b in ranges:
+        text = " ".join(u.text for u in units[a : b + 1]).strip()
+        cuts.append(
+            CutCandidate(
+                start=units[a].start,
+                end=units[b].end,
+                kind=CutKind.PRODUCTION,
+                reason="제작 현장 멘트/재시작 안내 자동 제거",
+                text=text,
+                confidence=0.96,
+            )
+        )
+    return cuts
+
+
+# v0.9 개발 중 이름 호환
+detect_production_chatter = detect_production_cuts
+
+
 def detect_review_candidates(utterances: list[Utterance], words: list[Word] | None = None) -> list[CutCandidate]:
     """자동 컷하지 않고 사람이 확인해야 할 후보를 검출합니다."""
+    production_cuts = detect_production_cuts(utterances)
     candidates: list[CutCandidate] = []
     units = sorted(utterances, key=lambda u: (u.start, u.end))
     for u in units:
         text = u.text.strip()
         norm = _normalise_for_match(text)
         lowered = text.lower()
+        if any(pc.start < u.end and pc.end > u.start for pc in production_cuts):
+            continue
         for marker in _RETAKE_MARKERS:
             if marker.lower() in lowered:
                 candidates.append(CutCandidate(start=u.start, end=u.end, kind=CutKind.RETAKE, reason=f"NG/재촬영 마커 후보: {marker}", text=text, confidence=0.78))
                 break
         else:
-            if any(m in text for m in _STUMBLE_MARKERS):
+            stumble_hit = any(m in text for m in _STUMBLE_MARKERS)
+            if "아니지만" in text or "아니잖" in text:
+                stumble_hit = False
+            if stumble_hit:
                 candidates.append(CutCandidate(start=u.start, end=u.end, kind=CutKind.RETAKE, reason="말실수/정정 표현 후보", text=text, confidence=0.58))
             elif norm in _low_info_norms() and u.duration <= 2.2:
                 candidates.append(CutCandidate(start=u.start, end=u.end, kind=CutKind.LOW_INFO, reason="저정보 연결 발화 후보", text=text, confidence=0.52))
@@ -248,12 +329,17 @@ def detect_review_candidates(utterances: list[Utterance], words: list[Word] | No
             candidates.append(CutCandidate(start=units[i].start, end=units[i].end, kind=CutKind.RETAKE, reason=f"반복 문장 후보 — 다음 문장과 유사도 {sim:.0f}%", text=units[i].text, confidence=min(0.92, sim / 100.0)))
     if words:
         for u in units:
+            if any(pc.start < u.end and pc.end > u.start for pc in production_cuts):
+                continue
             ws = [w for w in words if w.start >= u.start - 1e-6 and w.end <= u.end + 1e-6]
             if not ws:
                 continue
-            filler_count = sum(_clean_word(w.word).rstrip("?!.,…") in _FILLER_WORDS for w in ws)
+            cleaned = [_clean_word(w.word).rstrip("?!.,…") for w in ws]
+            density_words = [w for w in cleaned if w in _FILLER_WORDS and w != "이제"]
+            connector_count = sum(w in _PROTECTED_CONNECTORS for w in cleaned)
+            filler_count = len(density_words)
             ratio = filler_count / max(1, len(ws))
-            if filler_count >= 2 and ratio >= 0.30 and u.duration <= 5.0:
+            if filler_count >= 2 and ratio >= 0.34 and connector_count == 0 and u.duration <= 5.0:
                 candidates.append(CutCandidate(start=u.start, end=u.end, kind=CutKind.FILLER, reason=f"간투사 밀집 후보 ({filler_count}/{len(ws)})", text=u.text, confidence=0.55))
     candidates.sort(key=lambda c: (c.start, c.end, -c.confidence))
     deduped: list[CutCandidate] = []
@@ -266,14 +352,39 @@ def detect_review_candidates(utterances: list[Utterance], words: list[Word] | No
     return deduped
 
 
-def build_topic_sections(utterances: list[Utterance], *, max_gap: float = 8.0, min_duration: float = 20.0) -> list[TopicSection]:
+def _topic_title_for_text(text: str, fallback: str) -> tuple[str, list[str]]:
+    hits: list[str] = []
+    for kw in _TOPIC_KEYWORDS:
+        if kw in text and kw not in hits:
+            hits.append(kw)
+    if any(k in hits for k in ("AMH", "FSH", "난소 저반응", "난소저반응", "조기 폐경", "조기폐경")):
+        title = "난소기능·호르몬 수치"
+    elif any(k in hits for k in ("NK", "NK세포", "착상", "자궁경", "내막")):
+        title = "착상 준비·면역/자궁 환경"
+    elif any(k in hits for k in ("배아", "3일 배아", "5일 배아", "오일 배아", "미세수정", "미세 수정", "난자활성화", "난자 활성화", "방추사", "방수사")):
+        title = "배아 전략·보조생식술"
+    elif any(k in hits for k in ("임신", "이식", "시험관", "시술")):
+        title = "임신 성공 과정"
+    else:
+        title = fallback[:44] + ("…" if len(fallback) > 44 else "")
+    question = next((part.strip() for part in re.split(r"(?<=[?])\s+", text) if _looks_like_question(part)), "")
+    if question and hits:
+        question = question[:48] + ("…" if len(question) > 48 else "")
+        title = f"{title} — {question}"
+    return title, hits[:10]
+
+
+def build_topic_sections(utterances: list[Utterance], *, max_gap: float = 12.0, min_duration: float = 35.0) -> list[TopicSection]:
+    """질문/답변 흐름과 난임 도메인 키워드를 기준으로 챕터 후보를 만듭니다."""
     units = sorted(utterances, key=lambda u: (u.start, u.end))
     if not units:
         return []
     groups: list[list[Utterance]] = []
     cur: list[Utterance] = []
     for i, u in enumerate(units):
-        if cur and (u.start - cur[-1].end) >= max_gap and (cur[-1].end - cur[0].start) >= min_duration:
+        question_break = bool(cur) and _looks_like_question(u.text) and (u.start - cur[0].start) >= min_duration
+        gap_break = bool(cur) and (u.start - cur[-1].end) >= max_gap and (cur[-1].end - cur[0].start) >= min_duration
+        if question_break or gap_break:
             groups.append(cur)
             cur = []
         cur.append(u)
@@ -282,12 +393,19 @@ def build_topic_sections(utterances: list[Utterance], *, max_gap: float = 8.0, m
     sections: list[TopicSection] = []
     for g in groups:
         text = " ".join(u.text for u in g)
-        hits = [kw for kw in _TOPIC_KEYWORDS if kw in text]
-        title_base = g[0].text.strip()
-        title = title_base[:40] + ("…" if len(title_base) > 40 else "")
-        if hits:
-            title = f"{', '.join(hits[:3])} — {title}"
-        sections.append(TopicSection(index=len(sections) + 1, start=g[0].start, end=g[-1].end, title=title, keywords=hits[:8], text=(text[:240] + "…") if len(text) > 240 else text, score=min(1.0, 0.35 + 0.08 * len(hits) + min(0.25, (g[-1].end - g[0].start) / 600.0))))
+        title, hits = _topic_title_for_text(text, g[0].text.strip())
+        duration = g[-1].end - g[0].start
+        sections.append(
+            TopicSection(
+                index=len(sections) + 1,
+                start=g[0].start,
+                end=g[-1].end,
+                title=title,
+                keywords=hits,
+                text=(text[:300] + "…") if len(text) > 300 else text,
+                score=min(1.0, 0.35 + 0.07 * len(hits) + min(0.25, duration / 600.0)),
+            )
+        )
     return sections
 
 
@@ -301,13 +419,43 @@ def write_paper_edit_csv(utterances: list[Utterance], out_path: Path) -> Path:
     return out_path
 
 
-def write_review_decisions_csv(candidates: list[CutCandidate], out_path: Path) -> Path:
+def _candidate_recommendation(c: CutCandidate) -> tuple[str, str]:
+    reason = c.reason or ""
+    if c.kind == CutKind.PRODUCTION or "제작 현장" in reason or "재시작 안내" in reason:
+        return "cut", "high"
+    if c.kind == CutKind.LOW_INFO and c.duration <= 2.0:
+        return "review", "medium"
+    if c.kind == CutKind.FILLER:
+        return "review", "low"
+    return "review", "low"
+
+
+def _context_for_candidate(c: CutCandidate, utterances: list[Utterance] | None, *, before: bool) -> str:
+    if not utterances:
+        return ""
+    ordered = sorted(utterances, key=lambda u: (u.start, u.end))
+    if before:
+        prev = [u for u in ordered if u.end <= c.start + 1e-6]
+        return prev[-1].text if prev else ""
+    nxt = [u for u in ordered if u.start >= c.end - 1e-6]
+    return nxt[0].text if nxt else ""
+
+
+def write_review_decisions_csv(candidates: list[CutCandidate], out_path: Path, utterances: list[Utterance] | None = None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["decision", "start", "end", "duration", "kind", "confidence", "reason", "text"])
+        writer.writerow([
+            "decision", "recommendation", "safety", "start", "end", "duration",
+            "kind", "confidence", "reason", "context_before", "text", "context_after",
+        ])
         for c in sorted(candidates, key=lambda x: (x.start, x.end)):
-            writer.writerow(["", f"{c.start:.3f}", f"{c.end:.3f}", f"{c.duration:.3f}", c.kind, f"{c.confidence:.3f}", c.reason, c.text])
+            recommendation, safety = _candidate_recommendation(c)
+            writer.writerow([
+                "", recommendation, safety, f"{c.start:.3f}", f"{c.end:.3f}", f"{c.duration:.3f}",
+                c.kind, f"{c.confidence:.3f}", c.reason,
+                _context_for_candidate(c, utterances, before=True), c.text, _context_for_candidate(c, utterances, before=False),
+            ])
     return out_path
 
 
@@ -336,15 +484,19 @@ def write_director_html(
             cls = " review"
             badge = "REVIEW"
         rows.append(f"<tr class='{cls.strip()}'><td>{u.index}</td><td>{_fmt_time(u.start)}</td><td>{_fmt_time(u.end)}</td><td>{u.duration:.1f}s</td><td>{html.escape(badge)}</td><td>{html.escape(u.text)}</td></tr>")
-    review_rows = [f"<tr><td>{_fmt_time(c.start)}</td><td>{_fmt_time(c.end)}</td><td>{html.escape(c.kind)}</td><td>{c.confidence:.2f}</td><td>{html.escape(c.reason)}</td><td>{html.escape(c.text)}</td></tr>" for c in sorted(review_candidates, key=lambda x: (x.start, x.end))]
+    review_rows = []
+    for c in sorted(review_candidates, key=lambda x: (x.start, x.end)):
+        recommendation, safety = _candidate_recommendation(c)
+        review_rows.append(f"<tr><td>{_fmt_time(c.start)}</td><td>{_fmt_time(c.end)}</td><td>{html.escape(recommendation)}</td><td>{html.escape(safety)}</td><td>{html.escape(c.kind)}</td><td>{c.confidence:.2f}</td><td>{html.escape(c.reason)}</td><td>{html.escape(c.text)}</td></tr>")
     topic_rows = [f"<tr><td>{t.index}</td><td>{_fmt_time(t.start)}–{_fmt_time(t.end)}</td><td>{html.escape(t.title)}</td><td>{html.escape(', '.join(t.keywords))}</td></tr>" for t in topics]
-    css = """body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:24px;line-height:1.5;color:#111;background:#fafafa}h1,h2{margin-top:28px}table{border-collapse:collapse;width:100%;background:white}th,td{border:1px solid #ddd;padding:8px;vertical-align:top}th{background:#f1f1f1}.cut{background:#fff0f0}.review{background:#fff8df}.summary{display:flex;gap:12px;flex-wrap:wrap}.card{background:white;border:1px solid #ddd;border-radius:10px;padding:14px;min-width:180px}code{background:#eee;padding:2px 4px;border-radius:4px}"""
+    css = """body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:24px;line-height:1.5;color:#111;background:#fafafa}h1,h2{margin-top:28px}table{border-collapse:collapse;width:100%;background:white}th,td{border:1px solid #ddd;padding:8px;vertical-align:top}th{background:#f1f1f1}.cut{background:#fff0f0}.review{background:#fff8df}.summary{display:flex;gap:12px;flex-wrap:wrap}.card{background:white;border:1px solid #ddd;border-radius:10px;padding:14px;min-width:180px}code{background:#eee;padding:2px 4px;border-radius:4px}.note{background:#eef6ff;border:1px solid #cfe6ff;border-radius:10px;padding:12px}"""
     html_text = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>KoCut Director Review</title><style>{css}</style></head><body>
 <h1>KoCut Director Review — {html.escape(source_name)}</h1>
 <div class="summary"><div class="card"><b>원본</b><br>{duration:.1f}s</div><div class="card"><b>자동 컷</b><br>{len(cuts)}개 / {removed:.1f}s</div><div class="card"><b>리뷰 후보</b><br>{len(review_candidates)}개</div><div class="card"><b>문장 단위</b><br>{len(utterances)}개</div></div>
+<div class="note"><b>v0.9 정책</b><br>이제는 기본 삭제어로 자동 컷합니다. 근데/그래서/그리고/그런데는 연결어로 보호합니다. 제작 현장 멘트는 자동 컷으로 분리합니다.</div>
 <p><code>*.review_decisions.csv</code>의 decision 열에 <b>cut</b> 또는 <b>keep</b>을 적고, <code>kocut apply-decisions</code>로 EDL을 다시 만들 수 있습니다.</p>
 <h2>토픽/챕터 후보</h2><table><thead><tr><th>#</th><th>구간</th><th>제목</th><th>키워드</th></tr></thead><tbody>{''.join(topic_rows) or '<tr><td colspan="4">없음</td></tr>'}</tbody></table>
-<h2>리뷰 후보</h2><table><thead><tr><th>시작</th><th>끝</th><th>종류</th><th>신뢰도</th><th>이유</th><th>텍스트</th></tr></thead><tbody>{''.join(review_rows) or '<tr><td colspan="6">없음</td></tr>'}</tbody></table>
+<h2>리뷰 후보</h2><table><thead><tr><th>시작</th><th>끝</th><th>추천</th><th>안전도</th><th>종류</th><th>신뢰도</th><th>이유</th><th>텍스트</th></tr></thead><tbody>{''.join(review_rows) or '<tr><td colspan="8">없음</td></tr>'}</tbody></table>
 <h2>Paper edit</h2><table><thead><tr><th>#</th><th>시작</th><th>끝</th><th>길이</th><th>상태</th><th>텍스트</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 </body></html>"""
     out_path.write_text(html_text, encoding="utf-8")

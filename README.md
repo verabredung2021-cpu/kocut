@@ -400,3 +400,26 @@ python -m kocut process "D:\260507_대표원장님\C0430.mp4" `
 
 KoCut은 아직 Cutback 전체 제품군처럼 Premiere 내부 멀티트랙/멀티캠/토픽 stringout/B-roll 자동 배치까지 구현하지 않습니다. v0.7.0의 목표는 우선 **한국어 talking-head 영상에서 허접한 마이크로 점프컷을 줄이고, 편집자가 골라 쓸 수 있는 rough cut 후보를 안정적으로 만드는 것**입니다.
 
+
+
+## v0.9 editorial policy
+
+KoCut v0.9 focuses on safer Korean editorial decisions.
+
+- `이제` is treated as a default delete word.
+- `근데`, `그래서`, `그리고`, and `그런데` are protected as discourse connectors and are not automatically cut.
+- Production chatter such as `촬영 준비`, `인사부터 다시`, `잠깐만요`, `끝났습니다`, and `잘 편집해 주시고` is detected as high-confidence automatic cut material.
+- `review_decisions.csv` now includes recommendation, safety, and surrounding context columns.
+
+Recommended longform command:
+
+```powershell
+python -m kocut process "D:\path	oideo.mp4" `
+  --output-dir "D:\path	o\out" `
+  --device cuda `
+  --compute-type float16 `
+  --cut-preset safe `
+  --director-mode `
+  --write-variants `
+  -v
+```

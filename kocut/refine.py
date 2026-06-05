@@ -59,6 +59,12 @@ def refine_cuts(
     refined: list[CutCandidate] = []
     for cut in sorted(cuts, key=lambda c: (c.start, c.end)):
         s, e = cut.start, cut.end
+        if cut.kind == CutKind.FILLER and "사용자 기본 삭제어" in (cut.reason or ""):
+            # 사용자 강제 삭제어(예: 이제)는 단어 자체를 반드시 제거합니다.
+            # 앞뒤 단어와 타임스탬프가 너무 붙어 있어도 되살리지 않습니다.
+            if e > s:
+                refined.append(cut.model_copy(update={"start": max(0.0, s), "end": e}))
+            continue
         if kept:
             center = 0.5 * (s + e)
             # 간투사는 단어 자체가 짧아서 silence용 200ms+ 패딩을 그대로 적용하면

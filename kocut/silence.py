@@ -1,6 +1,6 @@
 """무음 구간 검출.
 
-librosa로 오디오의 RMS 에너지를 분석해 일정 시간 이상 조용한 구간을 찾습니다.
+soundfile+numpy로 오디오의 RMS 에너지를 분석해 일정 시간 이상 조용한 구간을 찾습니다.
 단어 타임스탬프(words)가 주어지면 발화가 있는 구간은 보호하고 발화 사이의
 gap만 검사하므로, 배경 음악이 깔린 구간을 잘못 자르지 않습니다.
 """
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import math
 
-import librosa
 import numpy as np
+import soundfile as sf
 
 from kocut.types import CutCandidate, CutKind, Word
 
@@ -100,7 +100,10 @@ def detect_silences(
             words, min_ms=min_ms, padding_ms=padding_ms, min_cut_ms=min_cut_ms
         )
 
-    y, sr = librosa.load(wav_path, sr=16000, mono=True)
+    data, sr = sf.read(wav_path, dtype="float32", always_2d=False)
+    y = np.asarray(data, dtype=np.float32)
+    if y.ndim == 2:
+        y = y.mean(axis=1)
     if y.size == 0:
         return []
 
@@ -119,30 +122,32 @@ def detect_silences(
         threshold_db = -40.0
 
     total_duration = y.size / float(sr)
-    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+    starts = np.arange(0, y.size - frame_length + 1, hop_length, dtype=np.int64)
+    if starts.size == 0:
+        return []
+    # 작은 테스트 WAV에서도 빠르게 동작하도록 stride trick 대신 명시 루프를 씁니다.
+    rms = np.empty(starts.size, dtype=np.float32)
+    for i, st in enumerate(starts):
+        frame = y[st : st + frame_length]
+        rms[i] = float(np.sqrt(np.mean(frame * frame)))
     max_rms = float(np.max(rms)) if rms.size else 0.0
-
-    # 기존 ref=np.max 방식은 전체가 0인 완전 무음 파일에서 0dB로 정규화되어
-    # 무음을 하나도 잡지 못합니다. 최대 RMS가 사실상 0이면 전체를 -100dB로 둡니다.
     if max_rms <= 1e-10:
         rms_db = np.full_like(rms, -100.0, dtype=np.float32)
     else:
-        rms_db = librosa.amplitude_to_db(rms, ref=max_rms)
+        rms_db = 20.0 * np.log10(np.maximum(rms, 1e-10) / max_rms)
 
-    times = librosa.frames_to_time(np.arange(len(rms_db)), sr=sr, hop_length=hop_length)
+    times = starts.astype(np.float64) / float(sr)
     silent_mask = rms_db < threshold_db
 
-    # 연속된 무음 프레임을 구간으로 묶기
     raw_ranges: list[tuple[float, float]] = []
     start_idx: int | None = None
     for i, is_silent in enumerate(silent_mask):
-        if is_silent and start_idx is None:
+        if bool(is_silent) and start_idx is None:
             start_idx = i
-        elif not is_silent and start_idx is not None:
+        elif not bool(is_silent) and start_idx is not None:
             raw_ranges.append((float(times[start_idx]), float(times[i])))
             start_idx = None
     if start_idx is not None:
-        # 마지막 무음 구간은 마지막 프레임 시작 시간이 아니라 실제 오디오 끝까지 포함
         raw_ranges.append((float(times[start_idx]), total_duration))
 
     min_dur = min_ms / 1000.0

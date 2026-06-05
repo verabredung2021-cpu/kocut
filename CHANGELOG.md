@@ -18,3 +18,17 @@
 - `pytest`: 112 passed.
 - `compileall`: passed.
 - CLI help for `process` and `apply-decisions`: passed.
+
+## v0.9.0 - editorial brain
+
+### Changed
+- Protect Korean discourse connectors from automatic filler cuts: `근데`, `그래서`, `그리고`, `그런데`, and related connectors are no longer cut by default.
+- Treat `이제` as a user-preferred default delete word and keep it through cut budgeting.
+- Split production chatter into high-confidence automatic cuts, including shooting/setup/restart/editorial handoff phrases.
+- Improve review CSV with recommendation, safety, and before/after context columns.
+- Improve topic sectioning using question boundaries and fertility/medical keywords.
+- Replace the librosa fallback silence scanner with soundfile+numpy to avoid Python 3.13/librosa/numba stalls.
+
+### Fixed
+- Fixed a possible runtime error in director-mode silence planning.
+- Reduced false retake candidates for normal explanatory phrases such as `아니지만` and `아니잖아요`.

@@ -115,6 +115,16 @@ PRESETS: dict[str, QualityPreset] = {
 VARIANT_PRESETS: tuple[str, ...] = ("safe", "balanced", "cutback", "aggressive")
 
 
+def is_forced_user_delete_cut(cut: CutCandidate) -> bool:
+    """사용자가 기본 삭제어로 지정한 word-level 컷인지 확인합니다."""
+    return cut.kind == CutKind.FILLER and "사용자 기본 삭제어" in (cut.reason or "")
+
+
+def is_must_keep_cut(cut: CutCandidate) -> bool:
+    """컷 예산 때문에 되살리면 안 되는 강제 컷입니다."""
+    return is_forced_user_delete_cut(cut) or cut.kind == getattr(CutKind, "PRODUCTION", "production")
+
+
 def get_preset(name: str | None) -> QualityPreset:
     key = (name or "safe").strip().lower()
     if key not in PRESETS:
@@ -154,12 +164,16 @@ def _drop_tiny_cuts(cuts: list[CutCandidate], min_cut: float) -> list[CutCandida
         return cuts
     result: list[CutCandidate] = []
     for cut in cuts:
-        if cut.kind == CutKind.SILENCE:
+        if is_forced_user_delete_cut(cut):
+            floor = 0.03
+        elif cut.kind == CutKind.SILENCE:
             floor = min_cut
         elif cut.kind == CutKind.FILLER:
             floor = min(0.20, min_cut)
         elif cut.kind == CutKind.RETAKE:
             floor = min(0.35, min_cut)
+        elif cut.kind == getattr(CutKind, "PRODUCTION", "production"):
+            floor = min(0.20, min_cut)
         else:
             floor = min_cut
         if cut.duration >= floor:
@@ -168,7 +182,11 @@ def _drop_tiny_cuts(cuts: list[CutCandidate], min_cut: float) -> list[CutCandida
 
 
 def _choose_cut_to_restore(left: CutCandidate, right: CutCandidate) -> CutCandidate:
-    priority = {CutKind.RETAKE: 3, CutKind.SILENCE: 2, CutKind.FILLER: 1}
+    if is_must_keep_cut(left) and not is_must_keep_cut(right):
+        return right
+    if is_must_keep_cut(right) and not is_must_keep_cut(left):
+        return left
+    priority = {getattr(CutKind, "PRODUCTION", "production"): 5, CutKind.RETAKE: 4, CutKind.SILENCE: 2, CutKind.FILLER: 1}
     lp = priority.get(left.kind, 1)
     rp = priority.get(right.kind, 1)
     if lp != rp:
@@ -180,7 +198,10 @@ def _choose_cut_to_restore(left: CutCandidate, right: CutCandidate) -> CutCandid
 
 def _cut_score(cut: CutCandidate) -> float:
     """예산 초과 시 어떤 컷을 우선 살릴지 결정하는 점수."""
+    if is_forced_user_delete_cut(cut):
+        return 10000.0 + cut.confidence
     kind_bonus = {
+        getattr(CutKind, "PRODUCTION", "production"): 120.0,
         CutKind.RETAKE: 100.0,
         CutKind.SILENCE: 20.0,
         CutKind.FILLER: 4.0,
@@ -198,20 +219,24 @@ def _apply_cut_budget(
 ) -> list[CutCandidate]:
     if not cuts or total_duration <= 0:
         return cuts
-    kept = list(cuts)
+    locked = [c for c in cuts if is_must_keep_cut(c)]
+    kept = [c for c in cuts if not is_must_keep_cut(c)]
     if max_cuts_per_minute is not None and max_cuts_per_minute > 0:
         max_count = max(1, int(math.ceil((total_duration / 60.0) * max_cuts_per_minute)))
-        if len(kept) > max_count:
-            keep_set = set(id(c) for c in sorted(kept, key=_cut_score, reverse=True)[:max_count])
+        flexible_budget = max(0, max_count - len(locked))
+        if len(kept) > flexible_budget:
+            keep_set = set(id(c) for c in sorted(kept, key=_cut_score, reverse=True)[:flexible_budget])
             kept = [c for c in kept if id(c) in keep_set]
     if max_remove_ratio is not None and max_remove_ratio > 0:
         budget = total_duration * max_remove_ratio
-        while kept and sum(c.duration for c in kept) > budget:
+        locked_removed = sum(c.duration for c in locked)
+        flexible_budget = max(0.0, budget - locked_removed)
+        while kept and sum(c.duration for c in kept) > flexible_budget:
             weakest = min(kept, key=_cut_score)
             kept.remove(weakest)
-    kept.sort(key=lambda c: c.start)
-    return kept
-
+    final = [*locked, *kept]
+    final.sort(key=lambda c: c.start)
+    return final
 
 def smooth_cuts(
     cuts: list[CutCandidate],
@@ -235,6 +260,8 @@ def smooth_cuts(
             for i in range(len(cuts) - 1):
                 keep_len = cuts[i + 1].start - cuts[i].end
                 if 0 <= keep_len < min_keep_between_cuts_seconds:
+                    if is_must_keep_cut(cuts[i]) and is_must_keep_cut(cuts[i + 1]):
+                        continue
                     restore = _choose_cut_to_restore(cuts[i], cuts[i + 1])
                     cuts.pop(i if restore is cuts[i] else i + 1)
                     cuts = _merge_overlaps(cuts)

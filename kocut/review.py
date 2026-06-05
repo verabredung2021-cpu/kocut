@@ -14,7 +14,7 @@ from pathlib import Path
 
 from kocut.types import CutCandidate, Meta
 
-_KIND_KR = {"filler": "간투사", "silence": "무음", "retake": "재촬영", "low_info": "저정보"}
+_KIND_KR = {"filler": "간투사", "silence": "무음", "retake": "재촬영", "low_info": "저정보", "production": "제작멘트"}
 
 
 def _tc(seconds: float) -> str:
@@ -45,6 +45,7 @@ def write_review(meta: Meta, out_path: Path, *, fps: float = 30.0) -> Path:
     n_fill = sum(1 for c in cuts if c.kind == "filler")
     n_sil = sum(1 for c in cuts if c.kind == "silence")
     n_ret = sum(1 for c in cuts if c.kind == "retake")
+    n_prod = sum(1 for c in cuts if c.kind == "production")
 
     lines = [
         f"# KoCut 컷 미리보기 — {Path(meta.source_path).name}",
@@ -54,8 +55,9 @@ def write_review(meta: Meta, out_path: Path, *, fps: float = 30.0) -> Path:
         f"- 원본 길이: **{_tc(meta.duration)}** ({meta.duration:.1f}초)",
         f"- 제거 예정: **{_tc(removed)}** ({removed:.1f}초, {pct:.1f}%)",
         f"- 결과 길이: **{_tc(final)}** ({final:.1f}초)",
-        f"- 컷 {len(cuts)}개 — 간투사 {n_fill} · 무음 {n_sil} · 재촬영 {n_ret}",
+        f"- 컷 {len(cuts)}개 — 간투사 {n_fill} · 무음 {n_sil} · 재촬영 {n_ret} · 제작멘트 {n_prod}",
         f"- 프레임레이트: {fps:g}fps · 자막 {len(meta.subtitles)}줄 · 쇼츠 후보 {len(meta.shorts)}개",
+        "- v0.9 정책: `이제`는 기본 삭제, `근데/그래서/그리고/그런데`는 연결어로 보호, 제작 멘트는 별도 자동 컷",
     ]
     for w in meta.warnings:
         lines.append(f"- ⚠️ {w}")

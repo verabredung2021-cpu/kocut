@@ -303,12 +303,14 @@ def analyze(
         progress(0.73, "문장 단위 분석 중...")
         utterances = director.build_utterances(words)
         topic_sections = director.build_topic_sections(utterances)
+        production_cuts = director.detect_production_cuts(utterances)
         review_candidates = director.detect_review_candidates(utterances, words)
 
         # 4. 컷 후보 검출 → 프리셋별 플래너 → 단어 경계 정제
         progress(0.78, "컷 후보 검출 중...")
         filler_raw = [] if skip_fillers else fillers.detect_fillers(words)
         retake_raw = [] if skip_retakes else retakes.detect_retakes(segments)
+        retake_plus_production = [*production_cuts, *retake_raw]
         cuts, filler_candidates, raw_count = _plan_cuts(
             words=words,
             segments=segments,
@@ -318,7 +320,7 @@ def analyze(
             preset_name=preset.name,
             skip_silence=skip_silence,
             filler_cuts=filler_raw,
-            retake_cuts=retake_raw,
+            retake_cuts=retake_plus_production,
             pad_before_ms=pad_before_ms,
             pad_after_ms=pad_after_ms,
             min_cut_ms=min_cut_ms,
@@ -346,7 +348,7 @@ def analyze(
                     preset_name=name,
                     skip_silence=skip_silence,
                     filler_cuts=filler_raw,
-                    retake_cuts=retake_raw,
+                    retake_cuts=retake_plus_production,
                     filler_mode=None,
                     director_mode=director_mode,
                 )
@@ -425,7 +427,7 @@ def analyze(
         )
         paper_edit_path = director.write_paper_edit_csv(utterances, out_dir / f"{video.stem}.paper_edit.csv")
         review_candidates_path = director.write_review_decisions_csv(
-            [*filler_candidates, *review_candidates], out_dir / f"{video.stem}.review_decisions.csv"
+            [*filler_candidates, *review_candidates], out_dir / f"{video.stem}.review_decisions.csv", utterances
         )
         html_review_path = director.write_director_html(
             source_name=video.name,

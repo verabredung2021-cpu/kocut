@@ -96,6 +96,7 @@ class CutKind:
     SILENCE = "silence"
     RETAKE = "retake"
     LOW_INFO = "low_info"
+    PRODUCTION = "production"
 
 
 class CutCandidate(_TimedModel):
