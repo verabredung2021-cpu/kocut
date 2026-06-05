@@ -1,4 +1,4 @@
-﻿# Security Review Notes
+# Security Review Notes
 
 This file tracks non-sensitive security review tasks.
 

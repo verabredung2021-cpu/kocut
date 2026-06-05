@@ -1,4 +1,4 @@
-﻿name: Documentation task
+name: Documentation task
 description: Suggest a documentation improvement
 title: "[Docs] "
 labels: ["documentation"]

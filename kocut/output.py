@@ -182,6 +182,66 @@ def write_edl(
     return out_path
 
 
+def repair_edl(
+    edl_text: str,
+    *,
+    fps: float = 30.0,
+    min_gap_seconds: float = 0.65,
+    min_clip_seconds: float = 0.0,
+) -> tuple[str, int, int]:
+    """기존 EDL의 짧은 삭제 구간을 되살려 인접 클립을 병합합니다 (재분석 불필요).
+
+    원본 영상을 다시 분석하지 않고 EDL의 소스 타임코드만으로 동작합니다.
+    ``min_gap_seconds``보다 짧은 '삭제된 구간'(클립 사이 소스 갭)을 되살려 양옆
+    클립을 하나로 잇습니다. 과분할(짧은 호흡까지 컷)된 EDL을 즉시 복구하는 용도이며,
+    무음 임계값을 바꿔 가며 재실행할 필요 없이 여러 값을 빠르게 시험할 수 있습니다.
+
+    반환: (복구된 EDL 텍스트, 원본 클립 수, 복구 후 클립 수)
+    """
+    base = _normalise_fps(fps)
+    fps_real = fps if (math.isfinite(fps) and fps > 1.0) else float(base)
+    min_gap_frames = max(0, int(round(min_gap_seconds * fps_real)))
+    min_clip_frames = max(0, int(round(min_clip_seconds * fps_real)))
+
+    events = re.findall(
+        r"^\d{3}\s+\S+\s+V\s+C\s+(\d\d:\d\d:\d\d[:;]\d\d)\s+(\d\d:\d\d:\d\d[:;]\d\d)",
+        edl_text,
+        re.M,
+    )
+    name_match = re.search(r"\*\s*FROM CLIP NAME:\s*(.+)", edl_text)
+    source_name = name_match.group(1).strip() if name_match else "source"
+
+    ranges: list[list[int]] = []
+    for si, so in events:
+        a, b = _tc_to_frames(si, base), _tc_to_frames(so, base)
+        if b > a:
+            ranges.append([a, b])
+    original_count = len(ranges)
+
+    merged: list[list[int]] = []
+    for a, b in ranges:
+        if merged and (a - merged[-1][1]) < min_gap_frames:
+            merged[-1][1] = max(merged[-1][1], b)  # 짧은 갭 되살려 병합
+        else:
+            merged.append([a, b])
+    if min_clip_frames > 0:
+        merged = [r for r in merged if (r[1] - r[0]) >= min_clip_frames]
+
+    lines = ["TITLE: KoCut Edit Repaired", "FCM: NON-DROP FRAME", ""]
+    rec = 0
+    for i, (a, b) in enumerate(merged, start=1):
+        dur = b - a
+        si_tc, so_tc = _frames_to_tc(a, base), _frames_to_tc(b, base)
+        ri_tc, ro_tc = _frames_to_tc(rec, base), _frames_to_tc(rec + dur, base)
+        for track in ("V", "A"):
+            lines.append(f"{i:03d}  AX       {track:<5} C        {si_tc} {so_tc} {ri_tc} {ro_tc}")
+            lines.append(f"* FROM CLIP NAME: {source_name}")
+            lines.append(f"* SOURCE FILE: {source_name}")
+        rec += dur
+    lines.append("")
+    return "\n".join(lines), original_count, len(merged)
+
+
 def write_meta_json(meta: Meta, out_path: Path) -> Path:
     """전체 메타데이터를 pretty JSON으로 저장합니다.
 

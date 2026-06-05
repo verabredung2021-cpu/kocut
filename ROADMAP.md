@@ -1,4 +1,4 @@
-﻿# KoCut Roadmap
+# KoCut Roadmap
 
 KoCut is an early-stage local video editing assistant for Korean creators, editors, clinics, agencies, interview channels, and small production teams.
 

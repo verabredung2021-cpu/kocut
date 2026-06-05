@@ -1,4 +1,4 @@
-﻿# Pull request checklist
+# Pull request checklist
 
 Thanks for contributing to KoCut.
 

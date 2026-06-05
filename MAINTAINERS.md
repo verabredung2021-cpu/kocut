@@ -1,4 +1,4 @@
-﻿# Maintainers
+# Maintainers
 
 KoCut is currently maintained by:
 

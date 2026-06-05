@@ -1,4 +1,4 @@
-﻿# Example exports
+# Example exports
 
 This folder contains small media-free examples showing the type of files KoCut can generate.
 

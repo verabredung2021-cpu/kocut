@@ -1,4 +1,4 @@
-﻿# Security Policy
+# Security Policy
 
 KoCut is a local video editing assistant that processes user-selected media files and exports editing metadata such as SRT, EDL, FCPXML, JSON, and Markdown.
 

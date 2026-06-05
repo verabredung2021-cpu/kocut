@@ -1,4 +1,4 @@
-﻿# Development Notes
+# Development Notes
 
 This document tracks implementation notes and maintainer priorities.
 

@@ -1,4 +1,4 @@
-﻿# Support
+# Support
 
 KoCut is an early-stage open-source project.
 

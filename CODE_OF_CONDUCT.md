@@ -1,4 +1,4 @@
-﻿# Code of Conduct
+# Code of Conduct
 
 KoCut aims to be a practical and respectful open-source project.
 

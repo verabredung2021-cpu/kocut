@@ -1,4 +1,4 @@
-﻿# Release Checklist
+# Release Checklist
 
 Use this checklist before publishing a new KoCut release.
 

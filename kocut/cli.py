@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from kocut import pipeline
+from kocut import output, pipeline
 from kocut.audio import FFmpegError
 from kocut.logger import get_logger
 from kocut.pipeline import FILLER_MODES
@@ -32,7 +32,7 @@ app = typer.Typer(
 )
 console = Console()
 
-_COMMANDS = {"process"}
+_COMMANDS = {"process", "repair-edl"}
 _ROOT_HELP_OPTIONS = {"-h", "--help", "--install-completion", "--show-completion"}
 _VALID_DEVICES = {"auto", "cuda", "cpu"}
 # faster-whisper/ctranslate2에서 널리 쓰이는 compute_type 값.
@@ -262,6 +262,40 @@ def process(
         console.print(f"\n[red]예상치 못한 오류:[/red] {exc}")
         console.print(f"[dim]자세한 내용은 로그를 확인하세요: {log_path}[/dim]")
         raise typer.Exit(code=1) from exc
+
+
+@app.command("repair-edl")
+def repair_edl_command(
+    edl: Path = typer.Argument(..., help="복구할 EDL 파일 경로"),
+    out: Path | None = typer.Option(None, "-o", "--output", help="출력 EDL (기본: <원본>.repaired.edl)"),
+    min_gap_ms: int = typer.Option(650, "--min-gap-ms", help="이보다 짧은 삭제 구간은 되살려 인접 클립 병합 (클수록 적게 자름)"),
+    min_clip_ms: int = typer.Option(0, "--min-clip-ms", help="이보다 짧은 클립은 제거(ms)"),
+    fps: float = typer.Option(23.976, "--fps", help="EDL 타임코드 fps (ms↔프레임 변환용)"),
+) -> None:
+    """과분할된 기존 EDL을 복구합니다 — 짧은 삭제 구간을 되살려 병합 (재분석/GPU 불필요).
+
+    무음 임계값을 바꿔 영상을 재분석하지 않고도, 이미 만든 EDL에서 값만 바꿔 가며
+    바로 import 테스트할 수 있습니다. 예: --min-gap-ms 650 (편집감 있게) / 800 (안전하게).
+    """
+    edl = edl.expanduser().resolve()
+    if not edl.exists():
+        console.print(f"[red]EDL 파일을 찾을 수 없습니다:[/red] {edl}")
+        raise typer.Exit(code=1)
+    text = edl.read_text(encoding="utf-8", errors="replace")
+    repaired, before, after = output.repair_edl(
+        text,
+        fps=fps,
+        min_gap_seconds=max(0, min_gap_ms) / 1000.0,
+        min_clip_seconds=max(0, min_clip_ms) / 1000.0,
+    )
+    if before == 0:
+        console.print("[yellow]EDL에서 클립을 찾지 못했습니다. KoCut이 생성한 EDL인지 확인하세요.[/yellow]")
+        raise typer.Exit(code=1)
+    out_path = out.expanduser() if out is not None else edl.with_name(f"{edl.stem}.repaired.edl")
+    out_path.write_text(repaired, encoding="utf-8")
+    console.print(f"[green]복구 완료:[/green] 클립 {before}개 → {after}개")
+    console.print(f"  출력: {out_path}")
+    console.print(f"  [dim]min-gap {min_gap_ms}ms 미만 삭제 구간을 되살림 · fps {fps:g}[/dim]")
 
 
 def main(args: Iterable[str] | None = None) -> None:

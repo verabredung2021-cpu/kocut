@@ -1,4 +1,4 @@
-﻿
+
 ## v0.4.1 - GPU DLL loading fix
 
 ### Fixed

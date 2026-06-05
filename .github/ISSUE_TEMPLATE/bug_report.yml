@@ -1,4 +1,4 @@
-﻿name: Bug report
+name: Bug report
 description: Report a reproducible problem in KoCut
 title: "[Bug] "
 labels: ["bug"]

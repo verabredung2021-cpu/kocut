@@ -1,4 +1,4 @@
-﻿# Contributing to KoCut
+# Contributing to KoCut
 
 Thanks for your interest in KoCut.
 

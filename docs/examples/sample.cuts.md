@@ -1,4 +1,4 @@
-﻿# KoCut sample cut report
+# KoCut sample cut report
 
 Source: `sample.mp4`  
 Language: Korean  

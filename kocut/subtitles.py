@@ -16,15 +16,18 @@ from kocut.korean import get_analyzer
 from kocut.types import SubtitleSegment, Word
 
 # Whisper 한국어 산출물 정리용 패턴
-# "0 .5" / "1 . 2" 처럼 소수점 앞에 공백이 끼는 흔한 오류 → "0.5"
-# (마침표 앞 공백이 있을 때만 매칭하므로 "2025. 5월" 같은 문장 경계는 건드리지 않음)
+# 1) "0 .5" / "1 . 2" 처럼 소수점 앞에 공백 → "0.5" (소수점 앞 공백일 때만, 양옆이 숫자)
+# 2) 구두점/기호 앞 공백 제거: "5 %" → "5%", "때문에 ." → "때문에."
+#    (공백은 항상 기호 '앞'만 제거하므로 "2025. 5월" 같은 문장 경계는 보존)
 _NUM_DECIMAL = re.compile(r"(\d)\s+\.\s*(\d)")
+_SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,!?%])")
 _MULTISPACE = re.compile(r"\s{2,}")
 
 
 def _clean_text(text: str) -> str:
     """자막 텍스트의 흔한 전사 공백 아티팩트를 정리합니다."""
     text = _NUM_DECIMAL.sub(r"\1.\2", text)
+    text = _SPACE_BEFORE_PUNCT.sub(r"\1", text)
     text = _MULTISPACE.sub(" ", text)
     return text.strip()
 
