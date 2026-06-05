@@ -14,6 +14,12 @@ vidia-smi.
 
 # Changelog
 
+
+## v0.4.2
+
+- Continued KoCut public development.
+- Updated project version to v0.4.2.
+- Refined OSS maintenance, documentation, and release workflow.
 All notable changes to KoCut will be documented in this file.
 
 ## Unreleased
@@ -50,4 +56,5 @@ All notable changes to KoCut will be documented in this file.
 - Silence, filler-word, retake, and Shorts candidate logic
 - SRT, EDL, JSON, and Markdown-style exports
 - Rule-based tests
+
 

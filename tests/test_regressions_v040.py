@@ -118,9 +118,15 @@ def test_pipeline_analyze_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyP
             words=[Word(word="중요한", start=2.0, end=2.6, prob=0.9), Word(word="내용입니다", start=2.7, end=3.6, prob=0.9)],
         )
 
+    captured_silence: dict[str, object] = {}
+
+    def fake_silence(*_a: object, **kwargs: object) -> list[object]:
+        captured_silence.update(kwargs)
+        return []
+
     monkeypatch.setattr(audio, "probe_media", fake_probe)
     monkeypatch.setattr(audio, "extract_wav", fake_extract)
-    monkeypatch.setattr(silence, "detect_silences", lambda *a, **k: [])
+    monkeypatch.setattr(silence, "detect_silences", fake_silence)
     monkeypatch.setattr(transcribe, "iter_segments", fake_iter)
 
     out_dir = tmp_path / "out"
@@ -135,6 +141,8 @@ def test_pipeline_analyze_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result.json_path.exists()
     assert result.fps == 23.976
     assert any(c.kind == "filler" for c in result.meta.cuts)  # '음' 검출
+    # 파이프라인 기본 무음 임계값(600ms)이 detect_silences로 전달돼야 함
+    assert captured_silence.get("min_ms") == 600
     # keep_wav=False → 임시 WAV 정리됨
     assert result.wav_path is None
     assert not (out_dir / "C0430.kocut.wav").exists()

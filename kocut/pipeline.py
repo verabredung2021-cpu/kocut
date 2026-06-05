@@ -101,8 +101,9 @@ def analyze(
     keep_wav: bool = False,
     pad_before_ms: int = 0,
     pad_after_ms: int = 0,
-    min_cut_ms: int = 0,
+    min_cut_ms: int = 100,
     min_clip_ms: int = 100,
+    min_silence_ms: int = 600,
     filler_mode: str = "balanced",
     on_progress: ProgressFn | None = None,
     logger: logging.Logger | None = None,
@@ -168,7 +169,7 @@ def analyze(
         if not skip_fillers:
             raw_cuts += fillers.detect_fillers(words)
         if not skip_silence:
-            raw_cuts += silence.detect_silences(str(wav_path), words)
+            raw_cuts += silence.detect_silences(str(wav_path), words, min_ms=max(0, min_silence_ms))
         if not skip_retakes:
             raw_cuts += retakes.detect_retakes(segments)
         to_cut, filler_candidates = _split_fillers(raw_cuts, filler_mode)
