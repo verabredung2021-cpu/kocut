@@ -1,4 +1,4 @@
-
+﻿
 ## v0.4.1 - GPU DLL loading fix
 
 ### Fixed
@@ -15,6 +15,12 @@ vidia-smi.
 # Changelog
 
 
+
+## v0.5.1
+
+- Continued KoCut public development.
+- Updated project version to v0.5.1.
+- Improved release workflow and repository maintenance.
 ## v0.4.2
 
 - Continued KoCut public development.
@@ -56,5 +62,6 @@ All notable changes to KoCut will be documented in this file.
 - Silence, filler-word, retake, and Shorts candidate logic
 - SRT, EDL, JSON, and Markdown-style exports
 - Rule-based tests
+
 
 

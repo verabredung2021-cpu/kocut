@@ -141,8 +141,9 @@ def test_pipeline_analyze_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result.json_path.exists()
     assert result.fps == 23.976
     assert any(c.kind == "filler" for c in result.meta.cuts)  # '음' 검출
-    # 파이프라인 기본 무음 임계값(600ms)이 detect_silences로 전달돼야 함
-    assert captured_silence.get("min_ms") == 600
+    # v0.5.1 기본 longform 품질 프로필은 짧은 호흡 컷 방지를 위해 1000ms 이상만 후보로 봄
+    assert captured_silence.get("min_ms") == 1000
+    assert captured_silence.get("padding_ms") == 0
     # keep_wav=False → 임시 WAV 정리됨
     assert result.wav_path is None
     assert not (out_dir / "C0430.kocut.wav").exists()

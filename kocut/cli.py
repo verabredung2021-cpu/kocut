@@ -22,6 +22,7 @@ from kocut import output, pipeline
 from kocut.audio import FFmpegError
 from kocut.logger import get_logger
 from kocut.pipeline import FILLER_MODES
+from kocut.quality import QUALITY_PROFILES
 from kocut.transcribe import WhisperNotInstalledError
 from kocut.types import Segment, Word
 
@@ -32,7 +33,7 @@ app = typer.Typer(
 )
 console = Console()
 
-_COMMANDS = {"process", "repair-edl"}
+_COMMANDS = {"process", "repair-edl", "diagnose-edl"}
 _ROOT_HELP_OPTIONS = {"-h", "--help", "--install-completion", "--show-completion"}
 _VALID_DEVICES = {"auto", "cuda", "cpu"}
 # faster-whisper/ctranslate2에서 널리 쓰이는 compute_type 값.
@@ -107,12 +108,15 @@ def _run_pipeline(
     keep_wav: bool,
     verbose: bool,
     *,
-    pad_before_ms: int = 0,
-    pad_after_ms: int = 0,
+    pad_before_ms: int | None = None,
+    pad_after_ms: int | None = None,
     min_cut_ms: int = 100,
-    min_clip_ms: int = 100,
-    min_silence_ms: int = 600,
-    filler_mode: str = "balanced",
+    min_clip_ms: int | None = None,
+    min_silence_ms: int | None = None,
+    filler_mode: str | None = None,
+    quality_profile: str = "longform",
+    min_silence_cut_ms: int | None = None,
+    min_keep_between_cuts_ms: int | None = None,
     skip_fcpxml: bool = False,
 ) -> None:
     """공용 파이프라인(pipeline.analyze)을 호출하고 결과를 콘솔에 요약합니다."""
@@ -152,6 +156,9 @@ def _run_pipeline(
             min_clip_ms=min_clip_ms,
             min_silence_ms=min_silence_ms,
             filler_mode=filler_mode,
+            quality_profile=quality_profile,
+            min_silence_cut_ms=min_silence_cut_ms,
+            min_keep_between_cuts_ms=min_keep_between_cuts_ms,
             on_progress=on_progress,
             logger=logger,
         )
@@ -197,25 +204,34 @@ def process(
     device: str = typer.Option("auto", "--device", "-d", help="처리 장치: auto / cuda / cpu"),
     compute_type: str = typer.Option("auto", "--compute-type", help="Whisper compute type: auto / float16 / int8 등"),
     fps: float | None = typer.Option(None, "--fps", help="EDL/FCPXML 프레임레이트 (미지정 시 원본에서 자동 감지)"),
-    filler_mode: str = typer.Option(
-        "balanced", "--filler-mode",
-        help="간투사 적용 강도: conservative(핵심만) / balanced(기본) / aggressive(애매한 것까지)",
+    quality_profile: str = typer.Option(
+        "longform", "--quality-profile", "--cut-style",
+        help="컷 품질 프리셋: longform(기본·자연스러움) / balanced / tight / raw",
+    ),
+    filler_mode: str | None = typer.Option(
+        None, "--filler-mode",
+        help="간투사 적용 강도: conservative / balanced / aggressive (미지정 시 quality-profile 값 사용)",
     ),
     skip_fillers: bool = typer.Option(False, "--skip-fillers", help="간투사 검출 건너뛰기"),
     skip_silence: bool = typer.Option(False, "--skip-silence", help="무음 검출 건너뛰기"),
     skip_retakes: bool = typer.Option(False, "--skip-retakes", help="재촬영 검출 건너뛰기"),
     skip_shorts: bool = typer.Option(False, "--skip-shorts", help="쇼츠 후보 건너뛰기"),
     keep_wav: bool = typer.Option(False, "--keep-wav", help="Whisper 입력용 WAV를 삭제하지 않고 보관"),
-    pad_before_ms: int = typer.Option(0, "--pad-before-ms", help="다음 발화 시작 전 남길 여유(ms) — 말 앞부분 보호"),
-    pad_after_ms: int = typer.Option(0, "--pad-after-ms", help="직전 발화 끝난 뒤 남길 여유(ms) — 말 뒷부분 보호"),
-    min_silence_ms: int = typer.Option(600, "--min-silence-ms", help="이보다 긴 무음만 컷 (작을수록 더 잘게 자름, 기본 600)"),
-    min_cut_ms: int = typer.Option(100, "--min-cut-ms", help="이보다 짧은 컷은 무시(ms) — 1~2프레임짜리 자잘한 컷 방지"),
-    min_clip_ms: int = typer.Option(100, "--min-clip-ms", help="이보다 짧은 '남길 구간'은 제거(ms) — 마이크로 클립 방지"),
+    pad_before_ms: int | None = typer.Option(None, "--pad-before-ms", help="다음 발화 시작 전 남길 여유(ms) — 미지정 시 profile 값 사용"),
+    pad_after_ms: int | None = typer.Option(None, "--pad-after-ms", help="직전 발화 끝난 뒤 남길 여유(ms) — 미지정 시 profile 값 사용"),
+    min_silence_ms: int | None = typer.Option(None, "--min-silence-ms", help="이보다 긴 무음만 후보로 봄(ms) — 미지정 시 profile 값 사용"),
+    min_silence_cut_ms: int | None = typer.Option(None, "--min-silence-cut-ms", help="최종 삭제할 최소 무음 길이(ms) — 짧은 호흡 컷 방지"),
+    min_keep_between_cuts_ms: int | None = typer.Option(None, "--min-keep-between-cuts-ms", help="두 컷 사이 말 조각이 이보다 짧으면 무음 컷을 되살림(ms)"),
+    min_cut_ms: int = typer.Option(100, "--min-cut-ms", help="이보다 짧은 컷은 무시(ms) — 간투사/재촬영 컷 보호용"),
+    min_clip_ms: int | None = typer.Option(None, "--min-clip-ms", help="이보다 짧은 '남길 구간'은 제거(ms) — 미지정 시 profile 값 사용"),
     skip_fcpxml: bool = typer.Option(False, "--skip-fcpxml", help="FCPXML 출력 건너뛰기"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="상세 로그"),
 ) -> None:
     """영상을 분석해 자막(SRT) + 컷 후보(EDL/FCPXML) + 메타데이터(JSON)를 생성합니다."""
-    if filler_mode not in FILLER_MODES:
+    if quality_profile not in QUALITY_PROFILES:
+        console.print(f"[red]옵션 오류:[/red] --quality-profile은 {' / '.join(sorted(QUALITY_PROFILES))} 중 하나여야 합니다.")
+        raise typer.Exit(code=2)
+    if filler_mode is not None and filler_mode not in FILLER_MODES:
         console.print(f"[red]옵션 오류:[/red] --filler-mode는 {' / '.join(FILLER_MODES)} 중 하나여야 합니다.")
         raise typer.Exit(code=2)
     video = video.expanduser().resolve()
@@ -242,6 +258,9 @@ def process(
             min_clip_ms=min_clip_ms,
             min_silence_ms=min_silence_ms,
             filler_mode=filler_mode,
+            quality_profile=quality_profile,
+            min_silence_cut_ms=min_silence_cut_ms,
+            min_keep_between_cuts_ms=min_keep_between_cuts_ms,
             skip_fcpxml=skip_fcpxml,
         )
     except FFmpegError as exc:

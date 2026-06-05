@@ -24,6 +24,7 @@ from kocut import (
     review,
     shorts,
     silence,
+    quality,
     subtitles,
     transcribe,
 )
@@ -99,12 +100,15 @@ def analyze(
     skip_shorts: bool = False,
     skip_fcpxml: bool = False,
     keep_wav: bool = False,
-    pad_before_ms: int = 0,
-    pad_after_ms: int = 0,
+    pad_before_ms: int | None = None,
+    pad_after_ms: int | None = None,
     min_cut_ms: int = 100,
-    min_clip_ms: int = 100,
-    min_silence_ms: int = 600,
-    filler_mode: str = "balanced",
+    min_clip_ms: int | None = None,
+    min_silence_ms: int | None = None,
+    filler_mode: str | None = None,
+    quality_profile: str = "longform",
+    min_silence_cut_ms: int | None = None,
+    min_keep_between_cuts_ms: int | None = None,
     on_progress: ProgressFn | None = None,
     logger: logging.Logger | None = None,
 ) -> PipelineResult:
@@ -114,6 +118,20 @@ def analyze(
     타임코드도 ffprobe로 읽어 FCPXML 해상도와 EDL relink 보정에 씁니다.
     """
     log = logger or logging.getLogger("kocut.pipeline")
+    profile = quality.get_profile(quality_profile)
+    resolved_min_silence_ms = profile.min_silence_ms if min_silence_ms is None else max(0, min_silence_ms)
+    resolved_pad_before_ms = profile.pad_before_ms if pad_before_ms is None else max(0, pad_before_ms)
+    resolved_pad_after_ms = profile.pad_after_ms if pad_after_ms is None else max(0, pad_after_ms)
+    resolved_min_clip_ms = profile.min_clip_ms if min_clip_ms is None else max(0, min_clip_ms)
+    resolved_filler_mode = profile.filler_mode if filler_mode is None else filler_mode
+    resolved_min_silence_cut_ms = (
+        profile.min_silence_cut_ms if min_silence_cut_ms is None else max(0, min_silence_cut_ms)
+    )
+    resolved_min_keep_between_cuts_ms = (
+        profile.min_keep_between_cuts_ms
+        if min_keep_between_cuts_ms is None
+        else max(0, min_keep_between_cuts_ms)
+    )
 
     def progress(fraction: float, desc: str) -> None:
         if on_progress is not None:
@@ -169,22 +187,31 @@ def analyze(
         if not skip_fillers:
             raw_cuts += fillers.detect_fillers(words)
         if not skip_silence:
-            raw_cuts += silence.detect_silences(str(wav_path), words, min_ms=max(0, min_silence_ms))
+            raw_cuts += silence.detect_silences(
+                str(wav_path), words, min_ms=resolved_min_silence_ms, padding_ms=0
+            )
         if not skip_retakes:
             raw_cuts += retakes.detect_retakes(segments)
-        to_cut, filler_candidates = _split_fillers(raw_cuts, filler_mode)
+        to_cut, filler_candidates = _split_fillers(raw_cuts, resolved_filler_mode)
         cuts = refine.refine_cuts(
             to_cut,
             words,
-            pad_before=max(0, pad_before_ms) / 1000.0,
-            pad_after=max(0, pad_after_ms) / 1000.0,
+            pad_before=resolved_pad_before_ms / 1000.0,
+            pad_after=resolved_pad_after_ms / 1000.0,
             min_cut=max(0, min_cut_ms) / 1000.0,
+        )
+        before_quality = len(cuts)
+        cuts = quality.smooth_cuts(
+            cuts,
+            total_duration=duration,
+            min_silence_cut_ms=resolved_min_silence_cut_ms,
+            min_keep_between_cuts_ms=resolved_min_keep_between_cuts_ms,
         )
         cuts.sort(key=lambda c: c.start)
         filler_candidates.sort(key=lambda c: c.start)
         log.info(
-            "컷 후보 %d개 → 모드[%s]·정제 후 %d개 (검토 후보 %d개)",
-            len(raw_cuts), filler_mode, len(cuts), len(filler_candidates),
+            "컷 후보 %d개 → 모드[%s]·정제 %d개 → 품질[%s] %d개 (검토 후보 %d개)",
+            len(raw_cuts), resolved_filler_mode, before_quality, quality_profile, len(cuts), len(filler_candidates),
         )
 
         # 5. 쇼츠 후보
@@ -204,7 +231,7 @@ def analyze(
             shorts=shorts_list,
             warnings=warnings,
         )
-        min_clip_seconds = max(0, min_clip_ms) / 1000.0
+        min_clip_seconds = resolved_min_clip_ms / 1000.0
         srt_path = output.write_srt(subs, out_dir / f"{video.stem}.srt")
         edl_path = output.write_edl(
             cuts,

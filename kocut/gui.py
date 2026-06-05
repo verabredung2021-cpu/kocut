@@ -64,7 +64,8 @@ def process_video(
     do_retakes: bool,
     do_shorts: bool,
     fps: float | None,
-    filler_mode: str,
+    quality_profile: str,
+    filler_mode: str | None,
     progress: gr.Progress = gr.Progress(),  # noqa: B008
 ) -> GuiResult:
     """영상을 분석해 (요약, 자막표, 컷표, 검토후보표, 쇼츠표, srt, edl, fcpxml, 리포트, json)을 반환합니다."""
@@ -87,6 +88,7 @@ def process_video(
             skip_retakes=not do_retakes,
             skip_shorts=not do_shorts,
             filler_mode=filler_mode,
+            quality_profile=quality_profile,
             on_progress=lambda f, d: progress(f, desc=d),
         )
     except FFmpegError as exc:
@@ -193,9 +195,14 @@ def build_ui() -> gr.Blocks:
                     value=None, label="프레임레이트 (EDL/FCPXML)",
                     info="미지정 시 원본에서 자동 감지",
                 )
+                quality_profile = gr.Dropdown(
+                    [("롱폼/강의 (자연스럽게, 기본)", "longform"), ("균형", "balanced"), ("쇼츠/빠른 호흡", "tight"), ("원시/디버그", "raw")],
+                    value="longform", label="컷 품질 프리셋",
+                    info="컷백처럼 자연스럽게 보려면 롱폼 또는 균형을 먼저 쓰세요",
+                )
                 filler_mode = gr.Dropdown(
-                    [("보수적 (핵심 간투사만)", "conservative"), ("균형 (기본)", "balanced"), ("적극적 (애매한 것까지)", "aggressive")],
-                    value="balanced", label="간투사 적용 강도",
+                    [("보수적 (핵심 간투사만)", "conservative"), ("균형", "balanced"), ("적극적 (애매한 것까지)", "aggressive")],
+                    value="conservative", label="간투사 적용 강도",
                     info="보수적이면 애매한 간투사는 '검토 후보'로만 표시",
                 )
 
@@ -251,7 +258,7 @@ def build_ui() -> gr.Blocks:
             process_video,
             inputs=[
                 path_text, uploaded, model, device, compute_type,
-                do_fillers, do_silence, do_retakes, do_shorts, fps, filler_mode,
+                do_fillers, do_silence, do_retakes, do_shorts, fps, quality_profile, filler_mode,
             ],
             outputs=[
                 summary, sub_df, cut_df, cand_df, short_df,
@@ -262,8 +269,8 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             "---\n"
             "💡 **사용 팁**: 첫 실행 시 Whisper 모델(~3GB)이 자동 다운로드됩니다. "
-            "GPU가 있으면 훨씬 빠릅니다. 자막이 과하게 끊기거나 간투사가 과검출되면 "
-            "간투사 강도를 '보수적'으로 낮추거나 옵션을 끄세요."
+            "GPU가 있으면 훨씬 빠릅니다. 컷이 너무 많으면 컷 품질 프리셋을 '롱폼/강의'로, "
+            "덜 잘리면 '균형' 또는 '쇼츠'로 바꾸세요."
         )
 
     return cast(gr.Blocks, demo)
