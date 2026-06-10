@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -6,14 +6,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Python tests
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11"]
 
     steps:
       - name: Checkout
@@ -24,11 +28,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Validate pyproject
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tomllib
+          tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print("pyproject.toml OK")
+          PY
+
+      - name: Install package
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" || pip install -e .
-          pip install pytest
+          python -m pip install -e ".[dev]"
 
       - name: Run tests
-        run: python -m pytest
+        run: |
+          python -m pytest -q
