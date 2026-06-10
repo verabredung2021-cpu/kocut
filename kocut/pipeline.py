@@ -25,6 +25,7 @@ from kocut import (
     silence,
     subtitles,
     transcribe,
+    xmeml,
 )
 from kocut.types import CutCandidate, Meta, Segment, Utterance, Word
 
@@ -50,6 +51,7 @@ class PipelineResult:
     review_candidates_path: Path
     html_review_path: Path
     fcpxml_path: Path | None
+    xmeml_path: Path | None
     wav_path: Path | None
     used_word_fallback: bool
     variant_edl_paths: dict[str, Path] = field(default_factory=dict)
@@ -229,6 +231,7 @@ def analyze(
     skip_retakes: bool = False,
     skip_shorts: bool = False,
     skip_fcpxml: bool = False,
+    skip_xml: bool = False,
     keep_wav: bool = False,
     cut_preset: str = "safe",
     pad_before_ms: int | None = None,
@@ -400,6 +403,18 @@ def analyze(
                 height=media.height,
                 min_clip_seconds=min_clip_seconds,
             )
+        xmeml_path: Path | None = None
+        if not skip_xml:
+            xmeml_path = xmeml.write_xmeml(
+                cuts,
+                out_dir / f"{video.stem}.premiere.xml",
+                duration,
+                effective_fps,
+                source_path=str(video),
+                width=media.width,
+                height=media.height,
+                min_clip_seconds=min_clip_seconds,
+            )
         variant_edl_paths: dict[str, Path] = {}
         if write_variants:
             for name, vcuts in variant_cuts.items():
@@ -460,6 +475,7 @@ def analyze(
         review_candidates_path=review_candidates_path,
         html_review_path=html_review_path,
         fcpxml_path=fcpxml_path,
+        xmeml_path=xmeml_path,
         wav_path=kept_wav,
         used_word_fallback=used_word_fallback,
         variant_edl_paths=variant_edl_paths,

@@ -1,13 +1,12 @@
-﻿[project]
+[project]
 name = "kocut"
-version = "0.9.0"
-description = "?쒓뎅???곸긽 ?먮룞 ?몄쭛 蹂댁“ ?꾧뎄 (?먮쭑 + 而??꾨낫 異붿텧)"
+version = "0.9.1"
+description = "한국어 영상 자동 편집 보조 도구 (자막 + 컷 후보 추출)"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "faster-whisper>=1.0.0",
     "kiwipiepy>=0.17.0",
-    "librosa>=0.10.0",
     "soundfile>=0.12.0",
     "rapidfuzz>=3.0.0",
     "pydantic>=2.0.0",
@@ -30,10 +29,10 @@ kocut = "kocut.cli:main"
 kocut-gui = "kocut.gui:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
+[tool.setuptools]
 packages = ["kocut"]
 
 [tool.pytest.ini_options]
@@ -44,4 +43,3 @@ pythonpath = ["."]
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
-

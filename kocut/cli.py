@@ -22,8 +22,8 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from kocut import output, pipeline, quality
-from kocut.audio import FFmpegError
+from kocut import output, pipeline, preview as preview_mod, quality
+from kocut.audio import FFmpegError, probe_media
 from kocut.logger import get_logger
 from kocut.pipeline import FILLER_MODES
 from kocut.transcribe import WhisperNotInstalledError
@@ -36,7 +36,7 @@ app = typer.Typer(
 )
 console = Console()
 
-_COMMANDS = {"process", "repair-edl", "diagnose-edl", "apply-decisions"}
+_COMMANDS = {"process", "repair-edl", "diagnose-edl", "preview", "apply-decisions"}
 _ROOT_HELP_OPTIONS = {"-h", "--help", "--install-completion", "--show-completion"}
 _VALID_DEVICES = {"auto", "cuda", "cpu"}
 _VALID_COMPUTE_TYPES = {
@@ -113,6 +113,7 @@ def _run_pipeline(
     min_keep_between_cuts_ms: int | None = None,
     filler_mode: str | None = None,
     skip_fcpxml: bool = False,
+    skip_xml: bool = False,
     write_variants: bool = True,
     director_mode: bool = True,
 ) -> None:
@@ -146,6 +147,7 @@ def _run_pipeline(
             skip_retakes=skip_retakes,
             skip_shorts=skip_shorts,
             skip_fcpxml=skip_fcpxml,
+            skip_xml=skip_xml,
             keep_wav=keep_wav,
             cut_preset=cut_preset,
             pad_before_ms=pad_before_ms,
@@ -195,7 +197,9 @@ def _run_pipeline(
     console.print(f"  자막:        {result.srt_path}")
     console.print(f"  컷 EDL:      {result.edl_path}")
     if result.fcpxml_path is not None:
-        console.print(f"  컷 FCPXML:   {result.fcpxml_path}  [dim](beta)[/dim]")
+        console.print(f"  컷 FCPXML:   {result.fcpxml_path}  [dim](DaVinci/FCPX용, beta)[/dim]")
+    if result.xmeml_path is not None:
+        console.print(f"  컷 XML:      {result.xmeml_path}  [dim](Premiere용 FCP7 XML, beta)[/dim]")
     console.print(f"  미리보기:    {result.review_path}")
     console.print(f"  Director HTML: {result.html_review_path}")
     console.print(f"  Paper edit CSV: {result.paper_edit_path}")
@@ -209,8 +213,8 @@ def _run_pipeline(
     console.print(f"  메타데이터:  {result.json_path}")
     if result.wav_path is not None:
         console.print(f"  검사용 WAV:  {result.wav_path}")
-    console.print("\nPremiere/DaVinci에서 SRT는 자막으로, EDL/FCPXML은 시퀀스로 import 하세요.")
-    console.print("[dim]relink가 어긋나면 FCPXML(프레임 정확·경로 포함)을 먼저 시도하세요. 컷 적용 전 .cuts.md로 검토.[/dim]")
+    console.print("\nimport 가이드: [bold]Premiere[/bold] → .premiere.xml · [bold]DaVinci[/bold] → .fcpxml 또는 EDL · 자막 → SRT")
+    console.print("[dim]주의: Premiere는 .fcpxml을 import하지 못합니다(FCPX 전용 포맷). 컷 적용 전 .cuts.md 또는 `kocut preview`로 검토하세요.[/dim]")
 
 
 @app.command("process")
@@ -241,7 +245,8 @@ def process(
     min_cut_ms: int | None = typer.Option(None, "--min-cut-ms", help="이보다 짧은 삭제 컷은 버림 — 미지정 시 프리셋 값"),
     min_keep_between_cuts_ms: int | None = typer.Option(None, "--min-keep-between-cuts-ms", help="두 컷 사이 고립 클립 최소 길이 — 미지정 시 프리셋 값"),
     min_clip_ms: int | None = typer.Option(None, "--min-clip-ms", help="EDL 출력에서 이보다 짧은 남길 구간 제거(기본 0, 보통 쓰지 않음)"),
-    skip_fcpxml: bool = typer.Option(False, "--skip-fcpxml", help="FCPXML 출력 건너뛰기"),
+    skip_fcpxml: bool = typer.Option(False, "--skip-fcpxml", help="FCPXML(DaVinci/FCPX용) 출력 건너뛰기"),
+    skip_xml: bool = typer.Option(False, "--skip-xml", help="Premiere XML(FCP7 xmeml) 출력 건너뛰기"),
     write_variants: bool = typer.Option(True, "--write-variants/--no-write-variants", help="safe/balanced/cutback/aggressive EDL을 한 번에 추가 출력"),
     director_mode: bool = typer.Option(True, "--director-mode/--word-gap-mode", help="문장 단위 컷 엔진 사용(v0.8 기본). 끄면 v0.7 word-gap 방식"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="상세 로그"),
@@ -280,6 +285,7 @@ def process(
             min_keep_between_cuts_ms=min_keep_between_cuts_ms,
             filler_mode=filler_mode,
             skip_fcpxml=skip_fcpxml,
+            skip_xml=skip_xml,
             write_variants=write_variants,
             director_mode=director_mode,
         )
@@ -382,6 +388,47 @@ def diagnose_edl_command(
     if len(ranges) > 120 or (gaps and statistics.median(gaps) < 0.6):
         console.print("[yellow]판정: 과분할 가능성이 큽니다. --cut-preset safe 또는 repair-edl --min-gap-ms 1000부터 보세요.[/yellow]")
 
+
+
+@app.command("preview")
+def preview_command(
+    video: Path = typer.Argument(..., help="원본 영상 파일"),
+    edl: Path = typer.Argument(..., help="KoCut이 생성한 .cuts.edl 또는 repaired EDL"),
+    out: Path | None = typer.Option(None, "-o", "--output", help="출력 MP4 (기본: <영상>.preview.mp4)"),
+    fps: float | None = typer.Option(None, "--fps", help="EDL fps (미지정 시 원본에서 자동 감지)"),
+    height: int = typer.Option(480, "--height", help="미리보기 세로 해상도 (작을수록 빠름)"),
+) -> None:
+    """컷이 적용된 결과를 저해상도 MP4로 렌더합니다 — NLE 없이 바로 확인."""
+    video = video.expanduser().resolve()
+    edl = edl.expanduser().resolve()
+    for path, label in ((video, "영상"), (edl, "EDL")):
+        if not path.exists():
+            console.print(f"[red]{label} 파일을 찾을 수 없습니다:[/red] {path}")
+            raise typer.Exit(code=1)
+    try:
+        media = probe_media(video)
+    except FFmpegError as exc:
+        console.print(f"[red]미디어 정보 읽기 실패:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    effective_fps = fps if fps is not None else (media.fps if media.fps > 0 else 30.0)
+    keeps = output.parse_edl_keep_ranges(
+        edl.read_text(encoding="utf-8", errors="replace"),
+        fps=effective_fps,
+        source_start_tc=media.start_tc,
+    )
+    if not keeps:
+        console.print("[red]EDL에서 클립을 찾지 못했습니다. KoCut이 생성한 EDL인지 확인하세요.[/red]")
+        raise typer.Exit(code=1)
+    out_path = out.expanduser() if out is not None else video.with_name(f"{video.stem}.preview.mp4")
+    console.print(f"클립 {len(keeps)}개 렌더 중... (세로 {height}px)")
+    try:
+        with console.status("ffmpeg 인코딩 중..."):
+            preview_mod.render_preview(video, keeps, out_path, height=height)
+    except FFmpegError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    total = sum(e - st for st, e in keeps)
+    console.print(f"[green]미리보기 완료:[/green] {out_path}  ({total:.1f}초, 클립 {len(keeps)}개)")
 
 
 _DECISION_CUT = {"cut", "yes", "y", "1", "true", "삭제", "자르기"}

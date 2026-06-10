@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.1 - v0.6 practical workflow merge
+
+### Added
+- Add Premiere Pro FCP7 XML export (`*.premiere.xml`, xmeml) on top of v0.9 editorial-brain.
+- Add `kocut preview` for low-resolution MP4 review from a KoCut EDL before importing into an NLE.
+- Restore EDL keep-range parsing with source start timecode offset support.
+
+### Fixed
+- Protect very short real utterances at the beginning/end of a video from being dropped by adjacent silence cuts.
+- Remove unused `librosa` dependency; silence fallback remains `soundfile + numpy`.
+
+### Kept from v0.9
+- Korean connector protection: `근데`, `그래서`, `그리고`, `그런데` are not automatic filler cuts.
+- User policy: `이제` remains a default delete word.
+- Director workflow: paper edit, HTML review, review decisions CSV, and `apply-decisions`.
+
+
 ## v0.8.0 - Director paper-edit workflow
 
 ### Added

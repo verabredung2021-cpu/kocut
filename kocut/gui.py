@@ -1,9 +1,9 @@
 """KoCut GUI — Gradio 기반 로컬 웹 인터페이스.
 
 브라우저에서 열리는 간단한 GUI입니다. 영상 경로를 입력하거나 파일을 선택하면
-자막·컷 후보·쇼츠 후보를 분석해 표로 보여주고, SRT/EDL/FCPXML/리포트/JSON을
+자막·컷 후보·쇼츠 후보를 분석해 표로 보여주고, SRT/EDL/FCPXML/Premiere XML/리포트/JSON을
 내려받을 수 있습니다. CLI와 **동일한** `pipeline.analyze()`를 호출하므로 결과가
-항상 같습니다(단어 경계 정제·FCPXML·미리보기 포함).
+항상 같습니다(단어 경계 정제·Premiere XML·FCPXML·미리보기 포함).
 
 실행:
     python -m kocut.gui
@@ -28,6 +28,7 @@ GuiResult = tuple[
     list[list[object]],
     list[list[object]],
     list[list[object]],
+    str,
     str,
     str,
     str,
@@ -72,7 +73,7 @@ def process_video(
     director_mode: bool,
     progress: gr.Progress = gr.Progress(),  # noqa: B008
 ) -> GuiResult:
-    """영상을 분석해 (요약, 자막표, 컷표, 검토후보표, 쇼츠표, srt, edl, fcpxml, 리포트, json)을 반환합니다."""
+    """영상을 분석해 (요약, 자막표, 컷표, 검토후보표, 쇼츠표, srt, edl, fcpxml, xmeml, 리포트, json)을 반환합니다."""
     video = _resolve_path(path_text, uploaded)
     if not video.exists():
         raise gr.Error(f"파일을 찾을 수 없습니다: {video}")
@@ -161,6 +162,7 @@ def process_video(
         str(result.srt_path),
         str(result.edl_path),
         str(result.fcpxml_path) if result.fcpxml_path else "",
+        str(result.xmeml_path) if result.xmeml_path else "",
         str(result.review_path),
         str(result.json_path),
         str(result.paper_edit_path),
@@ -259,7 +261,8 @@ def build_ui() -> gr.Blocks:
         with gr.Row():
             srt_out = gr.File(label="자막 (SRT)")
             edl_out = gr.File(label="컷 (EDL)")
-            fcpxml_out = gr.File(label="컷 (FCPXML, beta)")
+            fcpxml_out = gr.File(label="컷 (FCPXML, DaVinci/FCPX, beta)")
+            xmeml_out = gr.File(label="컷 (Premiere XML, beta)")
             review_out = gr.File(label="컷 미리보기 (MD)")
             json_out = gr.File(label="메타데이터 (JSON)")
             paper_out = gr.File(label="Paper edit (CSV)")
@@ -277,7 +280,7 @@ def build_ui() -> gr.Blocks:
             ],
             outputs=[
                 summary, sub_df, cut_df, cand_df, short_df,
-                srt_out, edl_out, fcpxml_out, review_out, json_out, paper_out, decisions_out, html_out,
+                srt_out, edl_out, fcpxml_out, xmeml_out, review_out, json_out, paper_out, decisions_out, html_out,
             ],
         )
 

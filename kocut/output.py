@@ -182,6 +182,33 @@ def write_edl(
     return out_path
 
 
+
+_EDL_V_EVENT = re.compile(
+    r"^\d{3}\s+\S+\s+V\s+C\s+(\d\d:\d\d:\d\d[:;]\d\d)\s+(\d\d:\d\d:\d\d[:;]\d\d)",
+    re.M,
+)
+
+
+def parse_edl_keep_ranges(
+    edl_text: str, *, fps: float = 30.0, source_start_tc: str | None = None
+) -> list[tuple[float, float]]:
+    """KoCut EDL에서 '남길 구간'(소스 기준, 초)을 추출합니다.
+
+    소스가 0이 아닌 임베디드 시작 TC로 기록됐다면 ``source_start_tc``를 주면
+    그만큼 빼서 파일 선두 0초 기준으로 되돌립니다. ``kocut preview``에서
+    원본 파일 기준 trim 범위를 만들 때 사용합니다.
+    """
+    base = _normalise_fps(fps)
+    fps_real = fps if (math.isfinite(fps) and fps > 1.0) else float(base)
+    offset = _tc_to_frames(source_start_tc, base) if source_start_tc else 0
+    ranges: list[tuple[float, float]] = []
+    for si, so in _EDL_V_EVENT.findall(edl_text):
+        a = _tc_to_frames(si, base) - offset
+        b = _tc_to_frames(so, base) - offset
+        if b > a:
+            ranges.append((max(0.0, a / fps_real), b / fps_real))
+    return ranges
+
 def repair_edl(
     edl_text: str,
     *,

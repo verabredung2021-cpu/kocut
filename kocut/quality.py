@@ -268,6 +268,27 @@ def smooth_cuts(
                     changed = True
                     break
 
+    # 가장자리 보호: 영상 시작/끝의 짧은 실제 발화가 인접 무음 컷 때문에
+    # min_clip 출력 필터에서 통째로 사라지는 상황을 막습니다.
+    if min_keep_between_cuts_seconds > 0 and cuts:
+        edge_drop: set[int] = set()
+        first = cuts[0]
+        if (
+            first.kind == CutKind.SILENCE
+            and not is_must_keep_cut(first)
+            and 0.0 < first.start < min_keep_between_cuts_seconds
+        ):
+            edge_drop.add(0)
+        last = cuts[-1]
+        if (
+            last.kind == CutKind.SILENCE
+            and not is_must_keep_cut(last)
+            and 0.0 < (total_duration - last.end) < min_keep_between_cuts_seconds
+        ):
+            edge_drop.add(len(cuts) - 1)
+        if edge_drop:
+            cuts = [c for i, c in enumerate(cuts) if i not in edge_drop]
+
     cuts = _apply_cut_budget(
         cuts,
         total_duration,
